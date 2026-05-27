@@ -12,7 +12,7 @@ Use this skill to create a new `packages/integration-<name>/` directory in the u
 
 - The user wants to start building a new connector (Jira, Asana, PagerDuty, etc.).
 - The user references the integration SDK and asks for a starting point.
-- The user is in the platform monorepo (verify by checking for `packages/integration-sdk` and `tools/scripts/publish-integration.ts`).
+- The user is in the platform monorepo (verify by checking for `packages/integration-sdk` and `tools/publish/integration.ts`).
 
 Do NOT use this skill if the integration already exists — offer to extend it instead.
 
@@ -62,4 +62,4 @@ packages/integration-<id>/
 
 - Do not invent custom NATS subjects — use the helpers exported by `@fireweaveai/integration-sdk`.
 - Do not duplicate webhook verification logic — call the SDK's `verifyHmac()` helper.
-- Do not modify `tools/scripts/publish-integration.ts` to special-case the new integration — the publish script is intentionally generic.
+- Do not modify `tools/publish/integration.ts` to special-case the new integration — the publish script is intentionally generic.
