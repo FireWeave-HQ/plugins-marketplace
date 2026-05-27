@@ -1,0 +1,21 @@
+{
+  "name": "fireweave",
+  "description": "Official FireweaveAI skills marketplace. Plugins for Fireweave customers and integration authors.",
+  "version": "0.1.0",
+  "owner": {
+    "name": "FireweaveAI",
+    "url": "https://fireweave.ai"
+  },
+  "plugins": [
+    {
+      "name": "fireweave",
+      "source": "./plugins/fireweave",
+      "description": "Customer-facing skills for working with FireweaveAI"
+    },
+    {
+      "name": "fireweave-dev",
+      "source": "./plugins/fireweave-dev",
+      "description": "Developer skills for building FireweaveAI integration plugins"
+    }
+  ]
+}

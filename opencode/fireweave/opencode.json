@@ -1,0 +1,10 @@
+{
+  "name": "fireweave",
+  "version": "0.1.0",
+  "description": "Skills for working with FireweaveAI as a customer — create tasks, check status, manage integrations, and inspect the platform from your AI coding tool.",
+  "type": "skills-only",
+  "skills": [
+    "./skills/create-task/SKILL.md",
+    "./skills/safe-rollout/SKILL.md"
+  ]
+}

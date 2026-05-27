@@ -1,0 +1,13 @@
+{
+  "name": "fireweave-dev",
+  "version": "0.1.0",
+  "description": "Skills for developers building FireweaveAI integration plugins — scaffold packages, author manifests, run the publish flow, and follow the integration SDK conventions.",
+  "author": {
+    "name": "FireweaveAI",
+    "url": "https://fireweave.ai"
+  },
+  "homepage": "https://fireweave.ai/docs/integrations",
+  "repository": "https://github.com/fireweaveai/plugins-marketplace",
+  "license": "Apache-2.0",
+  "keywords": ["fireweave", "integration-sdk", "plugin-development", "manifest"]
+}

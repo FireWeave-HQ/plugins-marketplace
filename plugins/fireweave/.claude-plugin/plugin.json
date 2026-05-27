@@ -1,0 +1,13 @@
+{
+  "name": "fireweave",
+  "version": "0.1.0",
+  "description": "Skills for working with FireweaveAI as a customer — create tasks, check status, manage integrations, and inspect the platform from your AI coding tool.",
+  "author": {
+    "name": "FireweaveAI",
+    "url": "https://fireweave.ai"
+  },
+  "homepage": "https://fireweave.ai",
+  "repository": "https://github.com/fireweaveai/plugins-marketplace",
+  "license": "Apache-2.0",
+  "keywords": ["fireweave", "tasks", "integrations", "workflows"]
+}

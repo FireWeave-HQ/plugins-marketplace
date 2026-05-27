@@ -1,0 +1,71 @@
+---
+name: scaffold-integration
+description: Scaffold a new FireweaveAI integration package. Trigger when the user says "create a new integration", "add a Fireweave integration for X", "scaffold an integration plugin", or asks to start building a connector for an external tool. Generates the package directory, manifest, Dockerfile, and entry point matching the conventions in packages/integration-sdk.
+activation:
+  globs: ["packages/**/*", "**/integration-*/**"]
+  manual: false
+aliases:
+  cursor: fireweave-scaffold-integration
+  cline: fw-scaffold-integration
+  codex: scaffold_fireweave_integration
+---
+
+# Scaffold a Fireweave Integration
+
+Use this skill to create a new `packages/integration-<name>/` directory in the user's FireweaveAI platform monorepo.
+
+## When to use
+
+- The user wants to start building a new connector (Jira, Asana, PagerDuty, etc.).
+- The user references the integration SDK and asks for a starting point.
+- The user is in the platform monorepo (verify by checking for `packages/integration-sdk` and `tools/scripts/publish-integration.ts`).
+
+Do NOT use this skill if the integration already exists — offer to extend it instead.
+
+## Inputs to gather
+
+1. **`integrationId`** — kebab-case slug, used as the marketplace identifier (e.g. `jira`, `pagerduty`). Verify it does not collide with an existing `packages/integration-*` directory.
+2. **Display name** — human-readable (e.g. "Jira", "PagerDuty").
+3. **Auth flow type** — one of `oauth2`, `github-app`, `api-key`. Most third-party SaaS tools use `oauth2`.
+4. **Webhook delivery scheme** — `hmac-sha256`, `hmac-sha1`, or `none` (rare).
+5. **Initial categories** — what kinds of work this integration will produce (e.g. `incident`, `task`, `code-review`).
+
+## What to generate
+
+```
+packages/integration-<id>/
+├── Dockerfile                    # copy structure from integration-github/Dockerfile
+├── package.json                  # @fireweaveai/integration-<id>, deps on @fireweaveai/integration-sdk
+├── tsconfig.json                 # extends ../../tsconfig.json with include: ["src"]
+├── .env.example                  # documents CLIENT_ID, CLIENT_SECRET, WEBHOOK_SECRET
+├── src/
+│   ├── manifest.ts               # IntegrationManifest with the answers above
+│   ├── index.ts                  # NATS connect + register against Infrastructure Services Bus
+│   └── webhook-handler.ts        # stub that decodes and re-emits webhook events
+└── README.md
+```
+
+## Generation rules
+
+- Use `@fireweaveai/integration-sdk` (workspace dependency) — never import from another integration package.
+- The manifest must export a typed `IntegrationManifest` with `integrationId` matching the directory suffix.
+- Webhook URL pattern is fixed: `/api/webhooks/{integrationId}/events`. Do not invent a custom path.
+- Match the package.json `scripts.build:image` line from `integration-github/package.json` exactly (same registry/version env var pattern).
+
+## After generation
+
+1. Run `bun install` from the repo root so the workspace links resolve.
+2. Run `bun --cwd packages/integration-<id> typecheck` (or `bun build src/index.ts --outdir /tmp/check --target bun`) to confirm types.
+3. Tell the user to fill in the `.env` file and then run:
+
+   ```sh
+   bun publish:integrations --only integration-<id>
+   ```
+
+   This publishes a dev-mode entry to the local marketplace.
+
+## What NOT to do
+
+- Do not invent custom NATS subjects — use the helpers exported by `@fireweaveai/integration-sdk`.
+- Do not duplicate webhook verification logic — call the SDK's `verifyHmac()` helper.
+- Do not modify `tools/scripts/publish-integration.ts` to special-case the new integration — the publish script is intentionally generic.
