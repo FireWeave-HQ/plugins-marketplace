@@ -142,7 +142,7 @@ of opening a browser, prints the URL + code to stderr:
 
 ```
 Open this URL on a machine with a browser:
-  https://api.fireweave.cloud/activate?user_code=ABCD-1234
+  https://app-server.fireweave.ai/activate?user_code=ABCD-1234
 Waiting for completion...
 ```
 

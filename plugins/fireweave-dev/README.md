@@ -9,7 +9,7 @@ Skills for developers building FireweaveAI integration plugins.
 ## Install
 
 ```
-/plugin marketplace add fireweaveai/plugins-marketplace
+/plugin marketplace add FireWeave-HQ/plugins-marketplace
 /plugin install fireweave-dev@fireweave
 ```
 

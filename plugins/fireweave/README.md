@@ -9,7 +9,7 @@ Skills for working with FireweaveAI directly from your AI coding tool.
 ## Install
 
 ```
-/plugin marketplace add fireweaveai/plugins-marketplace
+/plugin marketplace add FireWeave-HQ/plugins-marketplace
 /plugin install fireweave@fireweave
 ```
 

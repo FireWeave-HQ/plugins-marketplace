@@ -7,7 +7,7 @@
     "url": "https://fireweave.ai"
   },
   "homepage": "https://fireweave.ai",
-  "repository": "https://github.com/fireweaveai/plugins-marketplace",
+  "repository": "https://github.com/FireWeave-HQ/plugins-marketplace",
   "license": "Apache-2.0",
   "keywords": ["fireweave", "tasks", "integrations", "workflows"]
 }

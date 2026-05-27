@@ -21,7 +21,7 @@ function makeProfile(alias: string, overrides: Partial<Profile> = {}): Profile {
     version: 2,
     alias,
     kind: 'cloud',
-    server_url: 'https://api.fireweave.cloud',
+    server_url: 'https://app-server.fireweave.ai',
     access_token: 'cli_at_test',
     refresh_token: 'cli_rt_test',
     access_expires_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -50,7 +50,7 @@ test('ensureAuth returns access token + base URL from active profile', () => {
   writeHomeConfig(tmpHome, 'dev');
   const r = ensureAuth({ home: tmpHome, cwd: tmpCwd });
   expect(r.accessToken).toBe('cli_at_test');
-  expect(r.baseUrl).toBe('https://api.fireweave.cloud');
+  expect(r.baseUrl).toBe('https://app-server.fireweave.ai');
   expect(r.profile.alias).toBe('dev');
 });
 
@@ -100,7 +100,7 @@ test('describeActiveProfile returns redacted summary (no tokens)', () => {
   if (r.ok) {
     expect(r.profile).toBe('dev');
     expect(r.kind).toBe('cloud');
-    expect(r.server_url).toBe('https://api.fireweave.cloud');
+    expect(r.server_url).toBe('https://app-server.fireweave.ai');
     expect(r.user.name).toBe('Alice');
     expect((r as unknown as Record<string, unknown>).access_token).toBeUndefined();
   }

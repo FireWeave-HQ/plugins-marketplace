@@ -59,7 +59,7 @@ runtime branch.
 
 | Audience              | `bridgeUrl` / profile `server_url`                          | Token env var         |
 | --------------------- | ----------------------------------------------------------- | --------------------- |
-| Production end-users  | `https://api.fireweave.cloud/v1` (written by `fw login`)    | `FIREWEAVE_CLI_TOKEN` |
+| Production end-users  | `https://app-server.fireweave.ai/v1` (written by `fw login`)    | `FIREWEAVE_CLI_TOKEN` |
 | fw-platform engineers | `http://localhost:3000/v1` via `bridgeUrl` env (or profile) | `FIREWEAVE_CLI_TOKEN` |
 
 **Auth**: Bearer auth happens at the MCP transport layer via the
