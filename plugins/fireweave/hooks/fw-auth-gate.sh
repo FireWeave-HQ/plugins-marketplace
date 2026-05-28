@@ -2,20 +2,45 @@
 # fw-auth-gate.sh
 #
 # Triggered by:
-#   - UserPromptSubmit  (matcher: ^/fireweave:)        — typed slash commands
-#   - PreToolUse        (matcher: Skill(skill='...'))   — LLM-dispatched skill calls
+#   - PreToolUse  (matcher: Skill, if: Skill(skill='safe-rollout'|'create-task'))
+#     This covers both typed plugin slash commands (e.g. /fireweave:create-task,
+#     which dispatch through the Skill tool) and model-dispatched skill calls.
 #
-# Implements the L3 -> L2 -> L1 escalation defined in
-# .aidocs/plans/2026-05-09-fw-cli-deterministic-preflight-plan.md §4.
+# Implements the L3 -> L2 -> L1 escalation: silent token rotate, then
+# fast happy-path `fw status`, then inline OAuth device flow on failure.
 #
 # Exits:
-#   0  — auth ready (or restored inline). Prompt/tool proceeds.
-#   2  — auth required but could not be obtained. Prompt/tool blocked.
+#   0  — auth ready (or restored inline). Tool proceeds.
+#   2  — auth required but could not be obtained. Tool blocked.
 #
 # This script is idempotent: if the user is already authenticated,
 # it returns 0 without prompting or rotating.
 
 set -e
+
+# ── Defense-in-depth: gate on tool_input.skill ───────────────────────────
+# The PreToolUse hook entry's `if` clause is the primary scoping mechanism.
+# This stdin-JSON check is a belt-and-braces guard: if a future Claude Code
+# release changes `if` semantics OR an older harness ignores it, we still
+# exit 0 cleanly when invoked on a non-fireweave Skill call.
+HOOK_INPUT=""
+if [[ ! -t 0 ]]; then
+  HOOK_INPUT="$(cat)"
+fi
+
+if [[ -n "$HOOK_INPUT" ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    skill="$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.skill // empty' 2>/dev/null || true)"
+  else
+    # Pure-bash fallback: extract the first "skill": "<value>" pair.
+    skill="$(printf '%s' "$HOOK_INPUT" | grep -oE '"skill"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
+  fi
+  case "$skill" in
+    safe-rollout|create-task) ;;   # target skill — proceed with auth gate
+    "") ;;                         # no skill arg in payload — defensive accept
+    *) exit 0 ;;                   # other skill — silently skip auth gate
+  esac
+fi
 
 # ── Preflight: is `fw` even on the PATH? ─────────────────────────────────
 if ! command -v fw >/dev/null 2>&1; then

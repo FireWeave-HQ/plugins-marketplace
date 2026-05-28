@@ -1,24 +1,21 @@
 {
-  "description": "Fireweave auth gate — runs `fw status` before any Fireweave skill or slash command and triggers an inline OAuth device flow if needed. Scoped to Fireweave invocations only; other prompts and plugins are untouched.",
+  "description": "Fireweave auth gate — runs `fw status` before any Fireweave skill invocation and triggers an inline OAuth device flow if needed. Scoped to Fireweave skills only via PreToolUse + per-entry `if` clauses; other prompts and plugins are untouched.",
   "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "^/fireweave:",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-auth-gate.sh\"",
-            "timeout": 360
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
-        "matcher": "Skill\\(skill='(safe-rollout|create-task)'\\)",
+        "matcher": "Skill",
         "hooks": [
           {
             "type": "command",
+            "if": "Skill(skill='safe-rollout')",
+            "description": "fireweave auth preflight (safe-rollout)",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-auth-gate.sh\"",
+            "timeout": 360
+          },
+          {
+            "type": "command",
+            "if": "Skill(skill='create-task')",
+            "description": "fireweave auth preflight (create-task)",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-auth-gate.sh\"",
             "timeout": 360
           }
