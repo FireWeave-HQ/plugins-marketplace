@@ -2,16 +2,13 @@
   "mcpServers": {
     "fireweave-cloud-bridge": {
       "type": "stdio",
-      "command": "bun",
-      "args": [
-        "run",
-        "${CLAUDE_PLUGIN_ROOT}/mcp/fireweave-cloud-bridge/src/server.ts"
-      ]
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/fireweave-cloud-bridge/launcher.sh",
+      "args": []
     },
     "rollout-server": {
       "type": "stdio",
-      "command": "bun",
-      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/mcp/rollout-server/src/server.ts"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/rollout-server/launcher.sh",
+      "args": []
     }
   }
 }
