@@ -2,23 +2,23 @@
   "version": "unreleased",
   "platforms": {
     "linux-x64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-assets.ts",
+      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "linux-arm64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-assets.ts",
+      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "darwin-x64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-assets.ts",
+      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "darwin-arm64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-assets.ts",
+      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "windows-x64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-assets.ts",
+      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   }
