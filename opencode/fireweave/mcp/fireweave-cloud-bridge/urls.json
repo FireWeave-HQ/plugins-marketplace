@@ -1,25 +1,25 @@
 {
-  "version": "unreleased",
+  "version": "0.1.4",
   "platforms": {
     "linux-x64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "url": "https://assets-fireweave-ai.s3.us-east-2.amazonaws.com/plugins/v0.1.4/fireweave/fireweave-cloud-bridge/fireweave-cloud-bridge-linux-x64.mcpb",
+      "sha256": "b74ae2ce42b8e366de70597dd10ae9556de517e65166ea041f432d12cf99c0d0"
     },
     "linux-arm64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "url": "https://assets-fireweave-ai.s3.us-east-2.amazonaws.com/plugins/v0.1.4/fireweave/fireweave-cloud-bridge/fireweave-cloud-bridge-linux-arm64.mcpb",
+      "sha256": "5f6addc68064347475c7b2c1d67a84838f9ba37192a9f79c579b4255f79c165d"
     },
     "darwin-x64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "url": "https://assets-fireweave-ai.s3.us-east-2.amazonaws.com/plugins/v0.1.4/fireweave/fireweave-cloud-bridge/fireweave-cloud-bridge-darwin-x64.mcpb",
+      "sha256": "627dc10182c370f4619b77ef747bb89c61b0e894ed283f1789d97ee727283bbc"
     },
     "darwin-arm64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "url": "https://assets-fireweave-ai.s3.us-east-2.amazonaws.com/plugins/v0.1.4/fireweave/fireweave-cloud-bridge/fireweave-cloud-bridge-darwin-arm64.mcpb",
+      "sha256": "400874721b35481a718ac2e22b46a6071c2799659ae19b33e881ffa58f19eafa"
     },
     "windows-x64": {
-      "url": "STUB_URL — populated by publish workflow upload-mcpb-s3.ts",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "url": "https://assets-fireweave-ai.s3.us-east-2.amazonaws.com/plugins/v0.1.4/fireweave/fireweave-cloud-bridge/fireweave-cloud-bridge-windows-x64.mcpb",
+      "sha256": "d9bf204a182364b65867c2f5d68735e91b596c1599c27721e7ba6d493e944681"
     }
   }
 }
