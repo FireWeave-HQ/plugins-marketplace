@@ -103,13 +103,16 @@ Decide based on `state.lastStep`:
 stepNumber: '0' }`.
   > 3. Do not proceed past this point without a successful receipt write.
 
-  `AskUserQuestion`:
-  - Q: "Diffs from a previous run are in your working tree. What would you like to do?"
-  - Options:
-    - "Confirm and continue (Recommended)" → jump to **Step 8** (verify).
-    - "Revert and start over" → run `git restore` on the files listed in
-      `state.workingSpec.wrapPoints[].file`; call
-      `mcp__rollout-server__clear_lockfile`; restart from Step 0.1.
+**Gate `GATE-0-RESUME-DECISION`** — call `AskUserQuestion`:
+- Q: Diffs from a previous run are in your working tree. What would you like to do?
+- Options:
+  - Confirm and continue (Recommended)
+  - Revert and start over
+  Then act on the selected option:
+  - **Confirm and continue** → jump to **Step 8** (verify).
+  - **Revert and start over** → run `git restore` on the files listed in
+    `state.workingSpec.wrapPoints[].file`; call
+    `mcp__rollout-server__clear_lockfile`; restart from Step 0.1.
 
 - `lastStep === 'summary'` — jump to **Step 8.5** (re-show summary preview).
 - `lastStep === 'register' && state.rolloutId` — jump to the **post-register
@@ -137,18 +140,25 @@ before resuming:
 stepNumber: '0' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Branch HEAD changed since this rollout was registered (was
-     `<oldSha[:7]>`, now `<newSha[:7]>`). Update the participant SHA?"
-   - Options: - "Yes, update (Recommended)" → this is a **Configuration step** — call
-     via `guarded_call`: 1. Resolve the underlying tool name and server prefix
-     (`mcp__fireweave-server-proxy__`, `update_participant_sha`). 2. Call `mcp__rollout-server__guarded_call` with
-     `{ serverPrefix, toolName, args, isConfigurationStep: true,
-expectedResponseSchema: 'UpdateParticipantShaResult' }`. 3. If the response shape is `{ error: { code, ... } }`, print the
-     `remediation` field verbatim and stop. Do not retry, do not call
-     the underlying tool directly, do not call another tool. 4. If the response shape is `{ ok: true, result }`, use `result`
-     as if it were the underlying tool's return value. - "No, abort and start fresh" → call
-     `mcp__rollout-server__clear_lockfile`; user can re-register from Step 0.1.
+**Gate `GATE-0-FORCE-PUSH-DECISION`** — call `AskUserQuestion`:
+- Q: Branch HEAD changed since this rollout was registered (was `<oldSha[:7]>`, now `<newSha[:7]>`). Update the participant SHA?
+- Options:
+  - Yes, update (Recommended)
+  - No, abort and start fresh
+   Then act on the selected option:
+   - **Yes, update** → this is a **Configuration step** — call via `guarded_call`:
+     1. Resolve the underlying tool name and server prefix
+        (`mcp__fireweave-server-proxy__`, `update_participant_sha`).
+     2. Call `mcp__rollout-server__guarded_call` with
+        `{ serverPrefix, toolName, args, isConfigurationStep: true,
+        expectedResponseSchema: 'UpdateParticipantShaResult' }`.
+     3. If the response shape is `{ error: { code, ... } }`, print the
+        `remediation` field verbatim and stop. Do not retry, do not call the
+        underlying tool directly, do not call another tool.
+     4. If the response shape is `{ ok: true, result }`, use `result` as if it
+        were the underlying tool's return value.
+   - **No, abort and start fresh** → call `mcp__rollout-server__clear_lockfile`;
+     user can re-register from Step 0.1.
 
 ### Pre-seal spec-delta on re-run
 
@@ -177,20 +187,26 @@ only option presented is "Start a new rollout" (covered below).
 stepNumber: '0' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Your worktree diverges from the registered spec. Apply the delta to
-     this rollout?"
-   - Options: - "Yes, update the spec (Recommended)" → this is a **Configuration step**
-     — call via `guarded_call`: 1. Resolve the underlying tool name and server prefix
-     (`mcp__fireweave-server-proxy__`, `update_rollout_spec`). 2. Call `mcp__rollout-server__guarded_call` with
-     `{ serverPrefix, toolName, args: { rolloutId, deltaJson,
-expectedSpecVersion: rollout.specVersion },
-isConfigurationStep: true,
-expectedResponseSchema: 'UpdateRolloutSpecResult' }`. 3. On `{ error: { code: 'conflict', ... } }`, print the `remediation`
-     field verbatim and stop. The skill will re-read state on the next
-     invocation. 4. On `{ ok: true, result: { specVersion } }`, surface the new
-     `specVersion` and continue from Step 0.1. - "No, keep the registered spec" → ignore the local edits and continue
-     from Step 0.1.
+**Gate `GATE-0-SPEC-DELTA-DECISION`** — call `AskUserQuestion`:
+- Q: Your worktree diverges from the registered spec. Apply the delta to this rollout?
+- Options:
+  - Yes, update the spec (Recommended)
+  - No, keep the registered spec
+   Then act on the selected option:
+   - **Yes, update the spec** → this is a **Configuration step** — call via
+     `guarded_call`:
+     1. Resolve the underlying tool name and server prefix
+        (`mcp__fireweave-server-proxy__`, `update_rollout_spec`).
+     2. Call `mcp__rollout-server__guarded_call` with
+        `{ serverPrefix, toolName, args: { rolloutId, deltaJson,
+        expectedSpecVersion: rollout.specVersion }, isConfigurationStep: true,
+        expectedResponseSchema: 'UpdateRolloutSpecResult' }`.
+     3. On `{ error: { code: 'conflict', ... } }`, print the `remediation` field
+        verbatim and stop. The skill will re-read state on the next invocation.
+     4. On `{ ok: true, result: { specVersion } }`, surface the new
+        `specVersion` and continue from Step 0.1.
+   - **No, keep the registered spec** → ignore the local edits and continue from
+     Step 0.1.
 
 3. If `state ∉ { drafting, wrapping }` — the rollout is sealed or further
    along — the spec is frozen per CL6. Do NOT attempt `update_rollout_spec`.
@@ -200,12 +216,13 @@ expectedResponseSchema: 'UpdateRolloutSpecResult' }`. 3. On `{ error: { code: 'c
    >
    > Present a single option only.
 
-   `AskUserQuestion`:
-   - Q: "This rollout is `<state>` and its spec is frozen. What would you
-     like to do?"
-   - Options:
-     - "Start a new rollout" → call `mcp__rollout-server__clear_lockfile`;
-       restart the skill from Step 0.1 with a fresh lockfile.
+**Gate `GATE-0-SEALED-RERUN-DECISION`** — call `AskUserQuestion`:
+- Q: This rollout is `<state>` and its spec is frozen. What would you like to do?
+- Options:
+  - Start a new rollout
+   Then act on the selected option:
+   - **Start a new rollout** → call `mcp__rollout-server__clear_lockfile`;
+     restart the skill from Step 0.1 with a fresh lockfile.
 
 After the resume guard completes (or if no lockfile was found), proceed to
 Step 0.1 below. **At every step boundary from here on, write the lockfile
@@ -342,13 +359,14 @@ in the skill:
 stepNumber: '0.2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Open rollouts in this project — join an existing one or start fresh?"
-   - Options: one entry per open rollout (showing name + state +
-     primary_dev), plus "Create a new rollout (Recommended)".
-   - On "join": jump straight to Step 7 (codegen) using the existing
-     rollout's `flagKey` + `providers`. The skill becomes the JOIN
-     path, not the CREATE path.
+**Gate `GATE-0.2-JOIN-OR-CREATE`** — call `AskUserQuestion`:
+- Q: Open rollouts in this project — join an existing one or start fresh?
+- Options:
+  - Create a new rollout (Recommended)
+  - _plus one entry per open rollout (showing name + state + primary_dev)_
+   On selecting an existing rollout (**join**): jump straight to Step 7 (codegen)
+   using the existing rollout's `flagKey` + `providers`. The skill becomes the
+   JOIN path, not the CREATE path.
 
 2. **Multi-repo coordination (D6).** Call
    `mcp__fireweave-server-proxy__list_project_repos` with the projectId. If
@@ -362,16 +380,15 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "This project has <N> repos: [...]. You're in <currentRepo>. Does
-     this rollout require coordinated changes in any other repo?"
-   - Options: "No, contained to <currentRepo> (Recommended)" |
-     "Yes, also needs: <multi-select sibling repos>" | "Unsure — show me
-     typical patterns".
-   - On "Yes": collect a free-text "what changes" note per selected
-     sibling. v1 records these as advisory in the spec; coordination
-     happens via teammates running `/fw-rollout` in those repos against
-     the same rolloutId.
+**Gate `GATE-0.2-MULTI-REPO`** — call `AskUserQuestion`:
+- Q: This project has <N> repos: [...]. You're in <currentRepo>. Does this rollout require coordinated changes in any other repo?
+- Options:
+  - No, contained to <currentRepo> (Recommended)
+  - Yes, also needs: <multi-select sibling repos>
+  - Unsure — show me typical patterns
+   On **Yes**: collect a free-text "what changes" note per selected sibling. v1
+   records these as advisory in the spec; coordination happens via teammates
+   running `/fw-rollout` in those repos against the same rolloutId.
 
 3. **Capability discovery.** Call
    `mcp__fireweave-server-proxy__get_project_capabilities` to enumerate which
@@ -413,13 +430,13 @@ stepNumber: '0.2' }`.
 
    > **Note:** Managed PostHog must be enabled via the portal before running this skill.
 
-   `AskUserQuestion`:
-   - Q: "No feature-flag provider is connected. Bind one via the portal or cancel?"
-   - Options (in this order):
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/feature-flag-control/"
-     - "Cancel rollout"
-   - On "Cancel rollout": exit cleanly; `lastConfigGap` is preserved so a
-     subsequent `/fireweave:safe-rollout` invocation resumes here.
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-FEATURE-FLAG-CONTROL`** — call `AskUserQuestion`:
+- Q: No feature-flag provider is connected. Bind one via the portal or cancel?
+- Options:
+  - Open portal at https://app.fireweave.ai/projects/${projectId}/configure/feature-flag-control/
+  - Cancel rollout
+   On **Cancel rollout**: exit cleanly; `lastConfigGap` is preserved so a
+   subsequent `/fireweave:safe-rollout` invocation resumes here.
 
    ### 3.2 — `observability.query.metrics`
 
@@ -434,11 +451,11 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No metrics provider is connected for `observability.query.metrics`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-metrics/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-METRICS`** — call `AskUserQuestion`:
+- Q: No metrics provider is connected for `observability.query.metrics`. Bind one via the portal, or cancel?
+- Options:
+  - Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-metrics/
+  - Cancel rollout
 
    ### 3.3 — `observability.query.logs`
 
@@ -453,11 +470,11 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No logs provider is connected for `observability.query.logs`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-logs/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-LOGS`** — call `AskUserQuestion`:
+- Q: No logs provider is connected for `observability.query.logs`. Bind one via the portal, or cancel?
+- Options:
+  - Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-logs/
+  - Cancel rollout
 
    ### 3.4 — `observability.query.traces`
 
@@ -472,11 +489,11 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No traces provider is connected for `observability.query.traces`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-traces/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-TRACES`** — call `AskUserQuestion`:
+- Q: No traces provider is connected for `observability.query.traces`. Bind one via the portal, or cancel?
+- Options:
+  - Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-traces/
+  - Cancel rollout
 
    ### 3.5 — `alerts.{create,update,delete}`
 
@@ -494,11 +511,11 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No alerts provider is connected for `alerts.create`/`alerts.update`/`alerts.delete`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/alerts/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-ALERTS`** — call `AskUserQuestion`:
+- Q: No alerts provider is connected for `alerts.create`/`alerts.update`/`alerts.delete`. Bind one via the portal, or cancel?
+- Options:
+  - Open portal at https://app.fireweave.ai/projects/${projectId}/configure/alerts/
+  - Cancel rollout
 
    ### 3.6 — `cicd.commit-was-deployed`
 
@@ -513,11 +530,11 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No CI/CD deploy-tracking provider is connected for `cicd.commit-was-deployed`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/cicd-commit-was-deployed/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-CICD-COMMIT-WAS-DEPLOYED`** — call `AskUserQuestion`:
+- Q: No CI/CD deploy-tracking provider is connected for `cicd.commit-was-deployed`. Bind one via the portal, or cancel?
+- Options:
+  - Open portal at https://app.fireweave.ai/projects/${projectId}/configure/cicd-commit-was-deployed/
+  - Cancel rollout
 
    Once all six capabilities resolve, clear `lastConfigGap` on the next
    lockfile write and continue to step 4 below.
@@ -533,13 +550,11 @@ stepNumber: '0.2' }`.
 stepNumber: '0.2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Which environment should the deploy gate watch?"
-   - Options: one entry per environment in the registry (favourite
-     first), plus "Other (custom name)" if needed. If the registry is
-     empty, the server returns a synthesised `production` placeholder
-     (D28) — present it normally; it auto-registers on first deploy
-     webhook.
+**Gate `GATE-0.2-ENVIRONMENT-CHOICE`** — call `AskUserQuestion`:
+- Q: Which environment should the deploy gate watch?
+- Options:
+
+  - _one entry per environment in the registry (favourite first), plus "Other (custom name)" if needed. If the registry is empty, the server returns a synthesised `production` placeholder (D28) — present it normally; it auto-registers on first deploy webhook._
 
 5. **Baseline detection.** Call `mcp__rollout-server__detect_baseline`
    (local — needs git access) to find candidate baselines (last
@@ -580,15 +595,14 @@ stepNumber: '0.2' }`.
 stepNumber: '1' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "How should I find what to wrap?"
-- Options (always proposed in this order, with smart defaults):
-  - "Diff since last Fireweave rollout commit" (default if `detect_baseline` found one)
-  - "Diff since last release tag"
-  - "Diff since last green CI build on main"
-  - "Custom commit/tag/branch"
-  - "First-time wrap (ignore prior baselines)"
+**Gate `GATE-1-FEATURE-SURFACE`** — call `AskUserQuestion`:
+- Q: How should I find what to wrap?
+- Options:
+  - Diff since last Fireweave rollout commit (Recommended) — default if `detect_baseline` found one
+  - Diff since last release tag
+  - Diff since last green CI build on main
+  - Custom commit/tag/branch
+  - First-time wrap (ignore prior baselines)
 
 If the user chose any diff option:
 
@@ -609,10 +623,11 @@ If the user chose "First-time wrap":
 stepNumber: '1' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
+**Gate `GATE-1-FIRST-TIME-DIRS`** — call `AskUserQuestion` (multi-select):
+- Q: Which directories form the feature surface?
+- Options:
 
-- Q: "Which directories form the feature surface?"
-- Options: detected top-level src dirs (multi-select).
+  - _detected top-level src dirs_
 
 ## Step 2 — Feature metadata (D12)
 
@@ -627,13 +642,14 @@ Three sub-prompts, one `AskUserQuestion` each:
    >    `{ gateId: 'GATE-2-TYPE', questionHash, selectedOption,
 stepNumber: '2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
-   - Q: "What kind of change is this?"
-   - Options:
-     - "Feature (Recommended for new functionality)" → `type: 'feature'`
-     - "Bugfix" → `type: 'bugfix'`
-     - "Performance optimisation" → `type: 'performance'`
-     - "Refactor" → `type: 'refactor'`
-     - "Other" → `type: 'other'`
+**Gate `GATE-2-TYPE`** — call `AskUserQuestion`:
+- Q: What kind of change is this?
+- Options:
+  - Feature (Recommended) — Recommended for new functionality → type: 'feature'
+  - Bugfix — → type: 'bugfix'
+  - Performance optimisation — → type: 'performance'
+  - Refactor — → type: 'refactor'
+  - Other — → type: 'other'
 
 2. **Name** (free text via "Other"):
 
@@ -688,15 +704,11 @@ no prior rollouts, fall back to a canonical 100%-soak plan
 stepNumber: '3' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
+**Gate `GATE-3-ROLLOUT-STYLE`** — call `AskUserQuestion`:
+- Q: What's the rollout style?
+- Options:
 
-- Q: "What's the rollout style?"
-- Options (recommended one first, tagged with reason):
-  - "<recommended> (Recommended for this scenario: <reason from tool>)"
-  - "<next-best>"
-  - "<next-best>"
-  - "<fourth>"
-  - "Other / custom-schedule"
+  - _recommended one first, tagged with reason (e.g. "<recommended> (Recommended for this scenario: <reason from tool>)"), then the next-best alternatives, plus "Other / custom-schedule"_
 
 ## Step 4 — Capability resolution
 
@@ -760,9 +772,11 @@ For wrap-points where `cohortKeyExpression` is missing, prompt explicitly
 (per-symbol receipt — `GATE-5-COHORT-KEY-<symbol>` gate IDs are written
 dynamically; canonical group ID is `GATE-5-COHORT-KEY`):
 
-- Q: "What identifier should `<symbol>` use for cohort bucketing?"
-- Options: detected globals (`req.user.id`, `req.session.id`,
-  `ctx.userId`...) plus "Other (free text)".
+**Gate `GATE-5-COHORT-KEY`** — call `AskUserQuestion`:
+- Q: What identifier should `<symbol>` use for cohort bucketing?
+- Options:
+
+  - _detected globals (`req.user.id`, `req.session.id`, `ctx.userId`…) plus "Other (free text)"_
 
 ### Sub-step 5.1 — Coherence grouping
 
@@ -793,13 +807,12 @@ disagree).
 stepNumber: '5' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "How should these wrap-points ramp together?"
-- Options (always proposed in this top-to-bottom order):
-  - "All wrap-points enable together (single coherence group)"
-  - "Group as follows: <proposed grouping with cross-stack rationale>"
-  - "Each flag is independent (no coherence group)"
+**Gate `GATE-5-COHERENCE-GROUPING`** — call `AskUserQuestion`:
+- Q: How should these wrap-points ramp together?
+- Options:
+  - All wrap-points enable together (single coherence group)
+  - Group as follows: <proposed grouping with cross-stack rationale>
+  - Each flag is independent (no coherence group)
 
 **Enforcement.** Within a coherence group, all flags MUST declare the
 **same cohort key** expression — the controller buckets users once per
@@ -849,14 +862,13 @@ out of any one OR add custom metrics via the gate below.
 stepNumber: '6' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion` (multi-select, all three pre-checked):
-
-- Q: "Confirm the metrics to track for `<flag>`. The canonical three are pre-selected."
+**Gate `GATE-6-ACCEPT-METRIC`** — call `AskUserQuestion` (multi-select):
+- Q: Confirm the metrics to track for `<flag>`. The canonical three are pre-selected.
 - Options:
-  - "Adoption — `feature.<flag>.adopted` (Recommended)"
-  - "Health — `feature.<flag>.error` (Recommended)"
-  - "Latency — `feature.<flag>.duration_ms` (Recommended)"
-  - "Add custom metric (free text)"
+  - Adoption — `feature.<flag>.adopted` (Recommended)
+  - Health — `feature.<flag>.error` (Recommended)
+  - Latency — `feature.<flag>.duration_ms` (Recommended)
+  - Add custom metric (free text)
 
 If the user de-selects all three (no metric accepted), surface a
 warning popup and require explicit confirmation that they want to
@@ -950,13 +962,12 @@ For each confirmed wrap point (grouped by its `flagKey`):
 stepNumber: '7' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Apply the proposed wrap for `<wp.symbol>` in `<wp.file>`?"
+**Gate `GATE-7-CODEGEN-REVIEW`** — call `AskUserQuestion`:
+- Q: Apply the proposed wrap for `<wp.symbol>` in `<wp.file>`?
 - Options:
-  - "Yes, apply this Edit (Recommended)"
-  - "Edit needs adjustment — revise and re-prompt"
-  - "Skip this wrap-point"
+  - Yes, apply this Edit (Recommended)
+  - Edit needs adjustment — revise and re-prompt
+  - Skip this wrap-point
 
 Once **the first** diff has been applied, immediately call
 `mcp__rollout-server__write_lockfile` again with `diffApplied: true`. From
@@ -998,11 +1009,13 @@ If any check returns `pass: false` and the rule's policy is `block`:
 stepNumber: '8' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-- `AskUserQuestion`:
-  - Q: "Verification failed: <count> findings. Block commit?"
-  - Options: "Block and let me fix" | "Add TODO comments and proceed" |
-    "Override (record reason)"
-- If override, prompt for reason (free text); record in `.fireweave/rollout.audit.log`.
+**Gate `GATE-8-VERIFY-OVERRIDE`** — call `AskUserQuestion`:
+- Q: Verification failed: <count> findings. Block commit?
+- Options:
+  - Block and let me fix
+  - Add TODO comments and proceed
+  - Override (record reason)
+If **Override**, prompt for reason (free text); record in `.fireweave/rollout.audit.log`.
 
 Render a summary table of all findings before proceeding.
 
@@ -1038,14 +1051,14 @@ Render the summary.
 stepNumber: '8.5' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Register this rollout?"
+**Gate `GATE-8.5-REGISTER-OR-EDIT`** — call `AskUserQuestion`:
+- Q: Register this rollout?
 - Options:
-  - "Yes, register and capture commit (Recommended)"
-  - "Edit specific section…" → jump back to relevant step (4, 6, or 7);
-    re-render summary on return.
-  - "Cancel"
+  - Yes, register and capture commit (Recommended)
+  - Edit specific section…
+  - Cancel
+On **Edit specific section…** → jump back to the relevant step (4, 6, or 7);
+re-render the summary on return.
 
 Call `mcp__rollout-server__write_lockfile` with `{ lastStep: 'summary',
 diffApplied: true, workingSpec: <full spec> }` so an interrupt here
@@ -1064,16 +1077,16 @@ The deploy gate needs a real commit SHA to track. Before calling
 stepNumber: '9' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Ready to register? I'll need a commit SHA. Have you committed and pushed?"
+**Gate `GATE-9-SHA-READY`** — call `AskUserQuestion`:
+- Q: Ready to register? I'll need a commit SHA. Have you committed and pushed?
 - Options:
-  - "Yes, on branch <auto-detected>" → run `git rev-parse HEAD` via Bash;
-    run `git symbolic-ref --short HEAD`; verify the SHA is reachable from
-    `origin/<branch>` (`git branch -r --contains <sha>` includes
-    `origin/<branch>`).
-  - "Not yet — exit so I can commit/push" → exit cleanly; print resume
-    command.
+  - Yes, on branch <auto-detected>
+  - Not yet — exit so I can commit/push
+Then act on the selected option:
+- **Yes, on branch <auto-detected>** → run `git rev-parse HEAD` via Bash; run
+  `git symbolic-ref --short HEAD`; verify the SHA is reachable from
+  `origin/<branch>` (`git branch -r --contains <sha>` includes `origin/<branch>`).
+- **Not yet — exit so I can commit/push** → exit cleanly; print resume command.
 
 Once the SHA is captured, this is a **Configuration step** — call
 `register_rollout` via `guarded_call`:
@@ -1134,14 +1147,11 @@ selection is "Skip" so existing flows keep working unchanged.
 stepNumber: '9.1' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Commit the wrap diff and open a PR for this rollout? (opt-in;
-  default Skip preserves the manual flow.)"
+**Gate `GATE-9-COMMIT-AND-PR`** — call `AskUserQuestion`:
+- Q: Commit the wrap diff and open a PR for this rollout? (opt-in; default Skip preserves the manual flow.)
 - Options:
-  - "Skip — I'll commit + push manually" (default) → continue to
-    Step 10 without touching git.
-  - "Commit + open PR" → execute the commit + PR flow below.
+  - Skip — I'll commit + push manually (Recommended) — default; continue to Step 10 without touching git
+  - Commit + open PR — execute the commit + PR flow below
 
 **Commit + PR flow (only when the user selected "Commit + open PR"):**
 

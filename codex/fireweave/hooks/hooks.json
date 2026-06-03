@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__rollout_server__.*|mcp__fireweave_cloud_bridge__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$PLUGIN_ROOT/hooks/fw-auth-gate-core.sh\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -11,13 +11,6 @@
             "description": "fireweave auth preflight (safe-rollout)",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-auth-gate.sh\"",
             "timeout": 360
-          },
-          {
-            "type": "command",
-            "if": "Skill(skill='create-task')",
-            "description": "fireweave auth preflight (create-task)",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-auth-gate.sh\"",
-            "timeout": 360
           }
         ]
       }

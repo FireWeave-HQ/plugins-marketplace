@@ -16,7 +16,14 @@
 
 set -e
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve this server's bundle dir. Hosts that can't guarantee a stable cwd/$0
+# (codex/opencode/cline) pass FW_PLUGIN_ROOT = absolute path to this dir, written
+# by `fw mcp install`. Otherwise self-locate via $0 (Claude/Cursor).
+if [ -n "${FW_PLUGIN_ROOT:-}" ]; then
+  DIR="$FW_PLUGIN_ROOT"
+else
+  DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
 BIN_DIR="$DIR/bin"
 URLS_JSON="$DIR/urls.json"
 
@@ -154,6 +161,12 @@ else
     echo "fireweave MCP launcher: another launcher won the race but binary still missing" >&2
     exit 1
   fi
+fi
+
+# macOS Gatekeeper: a binary extracted from a downloaded archive can carry the
+# com.apple.quarantine xattr, which blocks exec. Clear it (best-effort).
+if [ "$OS" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
+  xattr -d com.apple.quarantine "$BIN_PATH" 2>/dev/null || true
 fi
 
 exec "$BIN_PATH" "$@"

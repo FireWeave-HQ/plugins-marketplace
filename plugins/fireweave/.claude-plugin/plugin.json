@@ -1,7 +1,7 @@
 {
   "name": "fireweave",
-  "version": "0.1.4",
-  "description": "Skills for working with FireweaveAI as a customer — create tasks, check status, manage integrations, and inspect the platform from your AI coding tool.",
+  "version": "1.0.0",
+  "description": "Skills for working with FireweaveAI as a customer — run safe feature-flag rollouts, manage integrations, and inspect the platform from your AI coding tool.",
   "author": {
     "name": "FireweaveAI",
     "url": "https://fireweave.ai"

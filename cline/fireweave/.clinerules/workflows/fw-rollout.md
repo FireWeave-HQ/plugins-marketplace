@@ -2,13 +2,15 @@
 
 > Wraps new code in a Fireweave-managed feature flag with cohort-keyed metrics, logs, traces, and alerts; persists configuration; registers a Restate-backed agent controller that ramps the rollout safely with auto-promote/rollback. Use when the user asks to "add a feature flag", "wrap this with telemetry", "set up a safe rollout", "ramp deployment", or invokes `/fireweave:safe-rollout`.
 >
-> _This workflow is user-triggered (Cline does not auto-activate workflows). Run with `/fw-rollout`._
+> _User-triggered (Cline does not auto-activate workflows). Run with `/fw-rollout.md`._
+
+> Interaction: gate each decision with `ask_followup_question` (one question per call; supply an `<options>` array). For multi-question groups, ask sequentially.
 
 # Wrap with Rollout
 
 You are about to wrap new code behind one OR MORE Fireweave-managed feature
 flags with the right cohort-keyed telemetry so a Restate-backed controller
-can ramp them safely. **Follow the steps in order. Use `AskUserQuestion`
+can ramp them safely. **Follow the steps in order. Use `ask_followup_question`
 for every clarification — never raw open-ended text prompts.**
 
 ### Multi-flag rollouts
@@ -34,14 +36,14 @@ This skill uses **three MCP servers** (configured in `.mcp.json`):
 - **`fireweave-cloud-bridge`** — stdio MCP shim that translates MCP
   `tools/call` into authenticated `${bridgeUrl}/v1/*` REST calls.
   Bearer-authenticated via the active `fw` CLI profile's token. Tools
-  surface as `mcp__fireweave-cloud-bridge__<name>`. The bridge replaces
+  surface as `use_mcp_tool(server_name="fireweave-cloud-bridge", tool_name="<name>")`. The bridge replaces
   the deprecated cloud-side MCP server (pitch 033) — there is only one
   routing endpoint now, controlled by the bridge's `bridgeUrl`.
 
 - **`rollout-server`** — local stdio. Owns operations that genuinely require
   the developer's local filesystem or git tree: lockfile, preferences file,
   baseline detection, code-tagging, and the seven verification tools that
-  inspect local code. Tools surface as `mcp__rollout-server__<name>`.
+  inspect local code. Tools surface as `use_mcp_tool(server_name="rollout-server", tool_name="<name>")`.
 
 ### Endpoint configuration (fw-platform engineers only)
 
@@ -76,7 +78,7 @@ the MCP tools for every decision.
 
 The skill may have been interrupted by a process crash, an IDE restart, a
 `/clear`, or an explicit user abort. Before doing anything else, call
-`mcp__rollout-server__read_lockfile` and branch on the result.
+`use_mcp_tool(server_name="rollout-server", tool_name="read_lockfile")` and branch on the result.
 
 ### If the lockfile exists
 
@@ -91,23 +93,24 @@ Decide based on `state.lastStep`:
 
   > **Gate `GATE-0-RESUME-DECISION`** — required.
   >
-  > 1. Call `AskUserQuestion` with the question and options below.
-  > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+  > 1. Call `ask_followup_question` with the question and options below.
+  > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
   >    `{ gateId: 'GATE-0-RESUME-DECISION', questionHash, selectedOption,
 stepNumber: '0' }`.
   > 3. Do not proceed past this point without a successful receipt write.
 
-  `AskUserQuestion`:
-  - Q: "Diffs from a previous run are in your working tree. What would you like to do?"
-  - Options:
-    - "Confirm and continue (Recommended)" → jump to **Step 8** (verify).
-    - "Revert and start over" → run `git restore` on the files listed in
-      `state.workingSpec.wrapPoints[].file`; call
-      `mcp__rollout-server__clear_lockfile`; restart from Step 0.1.
+**Gate `GATE-0-RESUME-DECISION`** — `ask_followup_question`:
+<question>Diffs from a previous run are in your working tree. What would you like to do?</question>
+<options>["Confirm and continue","Revert and start over"]</options>
+  Then act on the selected option:
+  - **Confirm and continue** → jump to **Step 8** (verify).
+  - **Revert and start over** → run `git restore` on the files listed in
+    `state.workingSpec.wrapPoints[].file`; call
+    `use_mcp_tool(server_name="rollout-server", tool_name="clear_lockfile")`; restart from Step 0.1.
 
 - `lastStep === 'summary'` — jump to **Step 8.5** (re-show summary preview).
 - `lastStep === 'register' && state.rolloutId` — jump to the **post-register
-  status path**: call `mcp__fireweave-server-proxy__get_rollout_status` with the
+  status path**: call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_status")` with the
   recorded `rolloutId`, render the current state, and offer the appropriate
   action buttons (Cancel for non-terminal, ack-alerts always available).
 
@@ -116,7 +119,7 @@ stepNumber: '0' }`.
 If the lockfile has a `rolloutId`, also check for branch-HEAD divergence
 before resuming:
 
-1. Call `mcp__fireweave-server-proxy__get_rollout_status(rolloutId)`.
+1. Call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_status")(rolloutId)`.
 2. Find the participant for THIS repo by matching `participant.repo` against
    `git remote get-url origin` (parsed to `org/repo`).
 3. If a matching participant is found, compare `participant.commitSha`
@@ -125,24 +128,29 @@ before resuming:
 
    > **Gate `GATE-0-FORCE-PUSH-DECISION`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0-FORCE-PUSH-DECISION', questionHash, selectedOption,
 stepNumber: '0' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Branch HEAD changed since this rollout was registered (was
-     `<oldSha[:7]>`, now `<newSha[:7]>`). Update the participant SHA?"
-   - Options: - "Yes, update (Recommended)" → this is a **Configuration step** — call
-     via `guarded_call`: 1. Resolve the underlying tool name and server prefix
-     (`mcp__fireweave-server-proxy__`, `update_participant_sha`). 2. Call `mcp__rollout-server__guarded_call` with
-     `{ serverPrefix, toolName, args, isConfigurationStep: true,
-expectedResponseSchema: 'UpdateParticipantShaResult' }`. 3. If the response shape is `{ error: { code, ... } }`, print the
-     `remediation` field verbatim and stop. Do not retry, do not call
-     the underlying tool directly, do not call another tool. 4. If the response shape is `{ ok: true, result }`, use `result`
-     as if it were the underlying tool's return value. - "No, abort and start fresh" → call
-     `mcp__rollout-server__clear_lockfile`; user can re-register from Step 0.1.
+**Gate `GATE-0-FORCE-PUSH-DECISION`** — `ask_followup_question`:
+<question>Branch HEAD changed since this rollout was registered (was `<oldSha[:7]>`, now `<newSha[:7]>`). Update the participant SHA?</question>
+<options>["Yes, update","No, abort and start fresh"]</options>
+   Then act on the selected option:
+   - **Yes, update** → this is a **Configuration step** — call via `guarded_call`:
+     1. Resolve the underlying tool name and server prefix
+        (`fireweave-server-proxy`, `update_participant_sha`).
+     2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
+        `{ serverPrefix, toolName, args, isConfigurationStep: true,
+        expectedResponseSchema: 'UpdateParticipantShaResult' }`.
+     3. If the response shape is `{ error: { code, ... } }`, print the
+        `remediation` field verbatim and stop. Do not retry, do not call the
+        underlying tool directly, do not call another tool.
+     4. If the response shape is `{ ok: true, result }`, use `result` as if it
+        were the underlying tool's return value.
+   - **No, abort and start fresh** → call `use_mcp_tool(server_name="rollout-server", tool_name="clear_lockfile")`;
+     user can re-register from Step 0.1.
 
 ### Pre-seal spec-delta on re-run
 
@@ -154,7 +162,7 @@ the `drafting` and `wrapping` states — once the rollout is `sealed`,
 `ramping`, `completed`, or `rolled-back`, the spec is frozen per CL6 and the
 only option presented is "Start a new rollout" (covered below).
 
-1. Call `mcp__fireweave-server-proxy__get_rollout_status(rolloutId)` and read
+1. Call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_status")(rolloutId)` and read
    `rollout.state`, `rollout.specVersion`, and the registered spec.
 2. If `state ∈ { drafting, wrapping }`, we diff the current worktree against
    the registered spec (wrap-points added, removed, threshold or cohort-key
@@ -164,27 +172,31 @@ only option presented is "Start a new rollout" (covered below).
    > **Gate `GATE-0-SPEC-DELTA-DECISION`** — required when the diff is
    > non-empty.
    >
-   > 1. Call `AskUserQuestion` with the delta-panel summary and the options
+   > 1. Call `ask_followup_question` with the delta-panel summary and the options
    >    below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0-SPEC-DELTA-DECISION', questionHash, selectedOption,
 stepNumber: '0' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Your worktree diverges from the registered spec. Apply the delta to
-     this rollout?"
-   - Options: - "Yes, update the spec (Recommended)" → this is a **Configuration step**
-     — call via `guarded_call`: 1. Resolve the underlying tool name and server prefix
-     (`mcp__fireweave-server-proxy__`, `update_rollout_spec`). 2. Call `mcp__rollout-server__guarded_call` with
-     `{ serverPrefix, toolName, args: { rolloutId, deltaJson,
-expectedSpecVersion: rollout.specVersion },
-isConfigurationStep: true,
-expectedResponseSchema: 'UpdateRolloutSpecResult' }`. 3. On `{ error: { code: 'conflict', ... } }`, print the `remediation`
-     field verbatim and stop. The skill will re-read state on the next
-     invocation. 4. On `{ ok: true, result: { specVersion } }`, surface the new
-     `specVersion` and continue from Step 0.1. - "No, keep the registered spec" → ignore the local edits and continue
-     from Step 0.1.
+**Gate `GATE-0-SPEC-DELTA-DECISION`** — `ask_followup_question`:
+<question>Your worktree diverges from the registered spec. Apply the delta to this rollout?</question>
+<options>["Yes, update the spec","No, keep the registered spec"]</options>
+   Then act on the selected option:
+   - **Yes, update the spec** → this is a **Configuration step** — call via
+     `guarded_call`:
+     1. Resolve the underlying tool name and server prefix
+        (`fireweave-server-proxy`, `update_rollout_spec`).
+     2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
+        `{ serverPrefix, toolName, args: { rolloutId, deltaJson,
+        expectedSpecVersion: rollout.specVersion }, isConfigurationStep: true,
+        expectedResponseSchema: 'UpdateRolloutSpecResult' }`.
+     3. On `{ error: { code: 'conflict', ... } }`, print the `remediation` field
+        verbatim and stop. The skill will re-read state on the next invocation.
+     4. On `{ ok: true, result: { specVersion } }`, surface the new
+        `specVersion` and continue from Step 0.1.
+   - **No, keep the registered spec** → ignore the local edits and continue from
+     Step 0.1.
 
 3. If `state ∉ { drafting, wrapping }` — the rollout is sealed or further
    along — the spec is frozen per CL6. Do NOT attempt `update_rollout_spec`.
@@ -194,18 +206,18 @@ expectedResponseSchema: 'UpdateRolloutSpecResult' }`. 3. On `{ error: { code: 'c
    >
    > Present a single option only.
 
-   `AskUserQuestion`:
-   - Q: "This rollout is `<state>` and its spec is frozen. What would you
-     like to do?"
-   - Options:
-     - "Start a new rollout" → call `mcp__rollout-server__clear_lockfile`;
-       restart the skill from Step 0.1 with a fresh lockfile.
+**Gate `GATE-0-SEALED-RERUN-DECISION`** — `ask_followup_question`:
+<question>This rollout is `<state>` and its spec is frozen. What would you like to do?</question>
+<options>["Start a new rollout"]</options>
+   Then act on the selected option:
+   - **Start a new rollout** → call `use_mcp_tool(server_name="rollout-server", tool_name="clear_lockfile")`;
+     restart the skill from Step 0.1 with a fresh lockfile.
 
 After the resume guard completes (or if no lockfile was found), proceed to
 Step 0.1 below. **At every step boundary from here on, write the lockfile
-via `mcp__rollout-server__write_lockfile` so the next interruption resumes
+via `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")` so the next interruption resumes
 from the right place.** After `register_rollout` succeeds at Step 9, call
-`mcp__rollout-server__clear_lockfile` to mark the work complete.
+`use_mcp_tool(server_name="rollout-server", tool_name="clear_lockfile")` to mark the work complete.
 
 ## Step 0.1 — Preflight (deterministic, via `fw` CLI)
 
@@ -217,12 +229,12 @@ responsibilities, not LLM judgment.
 
 Run `Bash: fw status --machine-readable` and parse the JSON. Bind the
 returned `org`, `project`, and `tokenExpiresAt` into your working
-memory. Cloud-routed tools surface as `mcp__fireweave-cloud-bridge__<name>`;
+memory. Cloud-routed tools surface as `use_mcp_tool(server_name="fireweave-cloud-bridge", tool_name="<name>")`;
 the bridge translates each `tools/call` into a `${bridgeUrl}/v1/*` REST
 call against the endpoint recorded in the active `fw` profile. The four
 Wave-A aliased tools (`list_projects`, `recommend_rollout_strategy`,
 `propose_metrics`, `extract_diff_surface`) are reached via
-`mcp__rollout-server__<name>` during the deprecation window.
+`use_mcp_tool(server_name="rollout-server", tool_name="<name>")` during the deprecation window.
 
 If for some reason `fw status` returns `ready: false` despite the hook
 having fired (race condition, env-var clearing mid-session, network
@@ -236,8 +248,8 @@ After capturing the resolved context, proceed to Step 0.1b.
 
 ## Step 0.1b — MCP manifest check
 
-Call `mcp__rollout-server__list_registered_tools` and
-`mcp__fireweave-server-proxy__list_registered_tools` (the latter
+Call `use_mcp_tool(server_name="rollout-server", tool_name="list_registered_tools")` and
+`use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_registered_tools")` (the latter
 discovers upstream tools via the cloud's MCP `listTools` handshake).
 
 Compare the union against `SKILL_EXPECTED_TOOL_MANIFEST` (declared
@@ -325,53 +337,49 @@ discovery calls below need server state at skill-run time, so they stay
 in the skill:
 
 1. **Multi-rollout coexistence (D21).** Call
-   `mcp__fireweave-server-proxy__list_open_rollouts` with the projectId. If
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_open_rollouts")` with the projectId. If
    any open rollouts exist (`state ∈ {drafting, wrapping}`):
 
    > **Gate `GATE-0.2-JOIN-OR-CREATE`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-JOIN-OR-CREATE', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Open rollouts in this project — join an existing one or start fresh?"
-   - Options: one entry per open rollout (showing name + state +
-     primary_dev), plus "Create a new rollout (Recommended)".
-   - On "join": jump straight to Step 7 (codegen) using the existing
-     rollout's `flagKey` + `providers`. The skill becomes the JOIN
-     path, not the CREATE path.
+**Gate `GATE-0.2-JOIN-OR-CREATE`** — `ask_followup_question`:
+<question>Open rollouts in this project — join an existing one or start fresh?</question>
+<options>["Create a new rollout"]</options>
+<!-- options also: plus one entry per open rollout (showing name + state + primary_dev) -->
+   On selecting an existing rollout (**join**): jump straight to Step 7 (codegen)
+   using the existing rollout's `flagKey` + `providers`. The skill becomes the
+   JOIN path, not the CREATE path.
 
 2. **Multi-repo coordination (D6).** Call
-   `mcp__fireweave-server-proxy__list_project_repos` with the projectId. If
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_project_repos")` with the projectId. If
    the project has > 1 repo connected:
 
    > **Gate `GATE-0.2-MULTI-REPO`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-MULTI-REPO', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "This project has <N> repos: [...]. You're in <currentRepo>. Does
-     this rollout require coordinated changes in any other repo?"
-   - Options: "No, contained to <currentRepo> (Recommended)" |
-     "Yes, also needs: <multi-select sibling repos>" | "Unsure — show me
-     typical patterns".
-   - On "Yes": collect a free-text "what changes" note per selected
-     sibling. v1 records these as advisory in the spec; coordination
-     happens via teammates running `/fw-rollout` in those repos against
-     the same rolloutId.
+**Gate `GATE-0.2-MULTI-REPO`** — `ask_followup_question`:
+<question>This project has <N> repos: [...]. You're in <currentRepo>. Does this rollout require coordinated changes in any other repo?</question>
+<options>["No, contained to <currentRepo>","Yes, also needs: <multi-select sibling repos>","Unsure — show me typical patterns"]</options>
+   On **Yes**: collect a free-text "what changes" note per selected sibling. v1
+   records these as advisory in the spec; coordination happens via teammates
+   running `/fw-rollout` in those repos against the same rolloutId.
 
 3. **Capability discovery.** Call
-   `mcp__fireweave-server-proxy__get_project_capabilities` to enumerate which
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_project_capabilities")` to enumerate which
    provider implements each capability for this project. A rollout requires
    bindings for ALL SIX capabilities below. For every capability that has
-   no provider, present a per-capability missing-config gate (`AskUserQuestion`
+   no provider, present a per-capability missing-config gate (`ask_followup_question`
    with the three-option pattern), then record the most recent unbound
    capability in `lastConfigGap` (lockfile field) before proceeding so a
    clean-exit resume can jump straight back to the gap. Walk the list in
@@ -399,21 +407,19 @@ stepNumber: '0.2' }`.
    > **Gate `GATE-0.2-CAPABILITY-FALLBACK-FEATURE-FLAG-CONTROL`** — required.
    >
    > 1. Set `lastConfigGap = 'feature-flag.control'` and write the lockfile.
-   > 2. Call `AskUserQuestion` with the question and options below.
-   > 3. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `ask_followup_question` with the question and options below.
+   > 3. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-CAPABILITY-FALLBACK-FEATURE-FLAG-CONTROL', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
    > **Note:** Managed PostHog must be enabled via the portal before running this skill.
 
-   `AskUserQuestion`:
-   - Q: "No feature-flag provider is connected. Bind one via the portal or cancel?"
-   - Options (in this order):
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/feature-flag-control/"
-     - "Cancel rollout"
-   - On "Cancel rollout": exit cleanly; `lastConfigGap` is preserved so a
-     subsequent `/fireweave:safe-rollout` invocation resumes here.
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-FEATURE-FLAG-CONTROL`** — `ask_followup_question`:
+<question>No feature-flag provider is connected. Bind one via the portal or cancel?</question>
+<options>["Open portal at https://app.fireweave.ai/projects/${projectId}/configure/feature-flag-control/","Cancel rollout"]</options>
+   On **Cancel rollout**: exit cleanly; `lastConfigGap` is preserved so a
+   subsequent `/fireweave:safe-rollout` invocation resumes here.
 
    ### 3.2 — `observability.query.metrics`
 
@@ -422,17 +428,15 @@ stepNumber: '0.2' }`.
    > **Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-METRICS`** — required.
    >
    > 1. Set `lastConfigGap = 'observability.query.metrics'` and write the lockfile.
-   > 2. Call `AskUserQuestion` with the question and options below.
-   > 3. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `ask_followup_question` with the question and options below.
+   > 3. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-METRICS', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No metrics provider is connected for `observability.query.metrics`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-metrics/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-METRICS`** — `ask_followup_question`:
+<question>No metrics provider is connected for `observability.query.metrics`. Bind one via the portal, or cancel?</question>
+<options>["Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-metrics/","Cancel rollout"]</options>
 
    ### 3.3 — `observability.query.logs`
 
@@ -441,17 +445,15 @@ stepNumber: '0.2' }`.
    > **Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-LOGS`** — required.
    >
    > 1. Set `lastConfigGap = 'observability.query.logs'` and write the lockfile.
-   > 2. Call `AskUserQuestion` with the question and options below.
-   > 3. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `ask_followup_question` with the question and options below.
+   > 3. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-LOGS', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No logs provider is connected for `observability.query.logs`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-logs/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-LOGS`** — `ask_followup_question`:
+<question>No logs provider is connected for `observability.query.logs`. Bind one via the portal, or cancel?</question>
+<options>["Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-logs/","Cancel rollout"]</options>
 
    ### 3.4 — `observability.query.traces`
 
@@ -460,17 +462,15 @@ stepNumber: '0.2' }`.
    > **Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-TRACES`** — required.
    >
    > 1. Set `lastConfigGap = 'observability.query.traces'` and write the lockfile.
-   > 2. Call `AskUserQuestion` with the question and options below.
-   > 3. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `ask_followup_question` with the question and options below.
+   > 3. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-TRACES', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No traces provider is connected for `observability.query.traces`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-traces/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-OBSERVABILITY-QUERY-TRACES`** — `ask_followup_question`:
+<question>No traces provider is connected for `observability.query.traces`. Bind one via the portal, or cancel?</question>
+<options>["Open portal at https://app.fireweave.ai/projects/${projectId}/configure/observability-query-traces/","Cancel rollout"]</options>
 
    ### 3.5 — `alerts.{create,update,delete}`
 
@@ -482,17 +482,15 @@ stepNumber: '0.2' }`.
    >
    > 1. Set `lastConfigGap = 'alerts.create'` (the canonical slug for the
    >    triple) and write the lockfile.
-   > 2. Call `AskUserQuestion` with the question and options below.
-   > 3. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `ask_followup_question` with the question and options below.
+   > 3. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-CAPABILITY-FALLBACK-ALERTS', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No alerts provider is connected for `alerts.create`/`alerts.update`/`alerts.delete`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/alerts/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-ALERTS`** — `ask_followup_question`:
+<question>No alerts provider is connected for `alerts.create`/`alerts.update`/`alerts.delete`. Bind one via the portal, or cancel?</question>
+<options>["Open portal at https://app.fireweave.ai/projects/${projectId}/configure/alerts/","Cancel rollout"]</options>
 
    ### 3.6 — `cicd.commit-was-deployed`
 
@@ -501,52 +499,47 @@ stepNumber: '0.2' }`.
    > **Gate `GATE-0.2-CAPABILITY-FALLBACK-CICD-COMMIT-WAS-DEPLOYED`** — required.
    >
    > 1. Set `lastConfigGap = 'cicd.commit-was-deployed'` and write the lockfile.
-   > 2. Call `AskUserQuestion` with the question and options below.
-   > 3. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 2. Call `ask_followup_question` with the question and options below.
+   > 3. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-CAPABILITY-FALLBACK-CICD-COMMIT-WAS-DEPLOYED', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 4. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "No CI/CD deploy-tracking provider is connected for `cicd.commit-was-deployed`. Bind one via the portal, or cancel?"
-   - Options:
-     - "Open portal at https://app.fireweave.ai/projects/${projectId}/configure/cicd-commit-was-deployed/"
-     - "Cancel rollout"
+**Gate `GATE-0.2-CAPABILITY-FALLBACK-CICD-COMMIT-WAS-DEPLOYED`** — `ask_followup_question`:
+<question>No CI/CD deploy-tracking provider is connected for `cicd.commit-was-deployed`. Bind one via the portal, or cancel?</question>
+<options>["Open portal at https://app.fireweave.ai/projects/${projectId}/configure/cicd-commit-was-deployed/","Cancel rollout"]</options>
 
    Once all six capabilities resolve, clear `lastConfigGap` on the next
    lockfile write and continue to step 4 below.
 
 4. **Environment selection (D13).** Call
-   `mcp__fireweave-server-proxy__list_project_environments`.
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_project_environments")`.
 
    > **Gate `GATE-0.2-ENVIRONMENT-CHOICE`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-0.2-ENVIRONMENT-CHOICE', questionHash, selectedOption,
 stepNumber: '0.2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
 
-   `AskUserQuestion`:
-   - Q: "Which environment should the deploy gate watch?"
-   - Options: one entry per environment in the registry (favourite
-     first), plus "Other (custom name)" if needed. If the registry is
-     empty, the server returns a synthesised `production` placeholder
-     (D28) — present it normally; it auto-registers on first deploy
-     webhook.
+**Gate `GATE-0.2-ENVIRONMENT-CHOICE`** — `ask_followup_question`:
+<question>Which environment should the deploy gate watch?</question>
+<options>[]</options>
+<!-- options also: one entry per environment in the registry (favourite first), plus "Other (custom name)" if needed. If the registry is empty, the server returns a synthesised `production` placeholder (D28) — present it normally; it auto-registers on first deploy webhook. -->
 
-5. **Baseline detection.** Call `mcp__rollout-server__detect_baseline`
+5. **Baseline detection.** Call `use_mcp_tool(server_name="rollout-server", tool_name="detect_baseline")`
    (local — needs git access) to find candidate baselines (last
    fw-rollout commit, last release tag, last green CI sha, current
    main).
 
 6. **Rollout history defaults.** Call
-   `mcp__fireweave-server-proxy__get_rollout_history` and
-   `mcp__fireweave-server-proxy__get_rollout_learnings` for this project. v1
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_history")` and
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_learnings")` for this project. v1
    stubs return defaults; use them to inform smart defaults at Steps 3
    and 6.
 
-7. **Lockfile checkpoint.** Call `mcp__rollout-server__write_lockfile`
+7. **Lockfile checkpoint.** Call `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")`
    with the discovery-checkpoint shape below. The `lastConfigGap` field
    is `null` once all six capabilities from step 3 resolved, or the slug
    of the most recent unbound capability if the user chose "Cancel
@@ -568,27 +561,21 @@ stepNumber: '0.2' }`.
 
 > **Gate `GATE-1-FEATURE-SURFACE`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-1-FEATURE-SURFACE', questionHash, selectedOption,
 stepNumber: '1' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "How should I find what to wrap?"
-- Options (always proposed in this order, with smart defaults):
-  - "Diff since last Fireweave rollout commit" (default if `detect_baseline` found one)
-  - "Diff since last release tag"
-  - "Diff since last green CI build on main"
-  - "Custom commit/tag/branch"
-  - "First-time wrap (ignore prior baselines)"
+**Gate `GATE-1-FEATURE-SURFACE`** — `ask_followup_question`:
+<question>How should I find what to wrap?</question>
+<options>["Diff since last Fireweave rollout commit","Diff since last release tag","Diff since last green CI build on main","Custom commit/tag/branch","First-time wrap (ignore prior baselines)"]</options>
 
 If the user chose any diff option:
 
 1. Run the corresponding `git diff <baseRef>..<headRef> --name-status` via
    `Bash` (the local git access that the cloud MCP can't do).
-2. Pass the diff text into `mcp__rollout-server__extract_diff_surface` —
+2. Pass the diff text into `use_mcp_tool(server_name="rollout-server", tool_name="extract_diff_surface")` —
    the cloud tool parses the diff into a structured `{ files, symbols }`
    shape.
 3. Present a confirm popup of detected files (multi-select, default-all).
@@ -597,44 +584,40 @@ If the user chose "First-time wrap":
 
 > **Gate `GATE-1-FIRST-TIME-DIRS`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-1-FIRST-TIME-DIRS', questionHash, selectedOption,
 stepNumber: '1' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Which directories form the feature surface?"
-- Options: detected top-level src dirs (multi-select).
+**Gate `GATE-1-FIRST-TIME-DIRS`** — `ask_followup_question` (multi-select):
+<question>Which directories form the feature surface?</question>
+<options>[]</options>
+<!-- options also: detected top-level src dirs -->
 
 ## Step 2 — Feature metadata (D12)
 
-Three sub-prompts, one `AskUserQuestion` each:
+Three sub-prompts, one `ask_followup_question` each:
 
 1. **Type** (radio per D20):
 
    > **Gate `GATE-2-TYPE`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-2-TYPE', questionHash, selectedOption,
 stepNumber: '2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
-   - Q: "What kind of change is this?"
-   - Options:
-     - "Feature (Recommended for new functionality)" → `type: 'feature'`
-     - "Bugfix" → `type: 'bugfix'`
-     - "Performance optimisation" → `type: 'performance'`
-     - "Refactor" → `type: 'refactor'`
-     - "Other" → `type: 'other'`
+**Gate `GATE-2-TYPE`** — `ask_followup_question`:
+<question>What kind of change is this?</question>
+<options>["Feature","Bugfix","Performance optimisation","Refactor","Other"]</options>
 
 2. **Name** (free text via "Other"):
 
    > **Gate `GATE-2-NAME`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-2-NAME', questionHash, selectedOption,
 stepNumber: '2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
@@ -645,8 +628,8 @@ stepNumber: '2' }`.
 
    > **Gate `GATE-2-DESCRIPTION`** — required.
    >
-   > 1. Call `AskUserQuestion` with the question and options below.
-   > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+   > 1. Call `ask_followup_question` with the question and options below.
+   > 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
    >    `{ gateId: 'GATE-2-DESCRIPTION', questionHash, selectedOption,
 stepNumber: '2' }`.
    > 3. Do not proceed past this point without a successful receipt write.
@@ -656,7 +639,7 @@ stepNumber: '2' }`.
 
 ## Step 3 — Rollout style (scenario-aware)
 
-Call `mcp__fireweave-cloud-bridge__get_recommendation_data` with
+Call `use_mcp_tool(server_name="fireweave-cloud-bridge", tool_name="get_recommendation_data")` with
 `{ projectId }`. This returns recent rollouts + outcomes for the project —
 raw data, not a pre-cooked recommendation.
 
@@ -676,37 +659,32 @@ no prior rollouts, fall back to a canonical 100%-soak plan
 
 > **Gate `GATE-3-ROLLOUT-STYLE`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-3-ROLLOUT-STYLE', questionHash, selectedOption,
 stepNumber: '3' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "What's the rollout style?"
-- Options (recommended one first, tagged with reason):
-  - "<recommended> (Recommended for this scenario: <reason from tool>)"
-  - "<next-best>"
-  - "<next-best>"
-  - "<fourth>"
-  - "Other / custom-schedule"
+**Gate `GATE-3-ROLLOUT-STYLE`** — `ask_followup_question`:
+<question>What's the rollout style?</question>
+<options>[]</options>
+<!-- options also: recommended one first, tagged with reason (e.g. "<recommended> (Recommended for this scenario: <reason from tool>)"), then the next-best alternatives, plus "Other / custom-schedule" -->
 
 ## Step 4 — Capability resolution
 
 Capabilities resolved already in Step 0.2 sub-step 3 via
-`mcp__fireweave-server-proxy__get_project_capabilities`. For any capability still
+`use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_project_capabilities")`. For any capability still
 unbound (`null` in the map):
 
 > **Gate `GATE-4-PROVIDER-BINDING`** — required (per unbound capability).
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-4-PROVIDER-BINDING', questionHash, selectedOption,
 stepNumber: '4' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion` with each candidate provider. If none and Fireweave
+`ask_followup_question` with each candidate provider. If none and Fireweave
 PostHog supports it, default to Fireweave PostHog.
 
 For each provider binding, the resolved `providerId` is recorded in the
@@ -718,7 +696,7 @@ For each file in the feature surface, **read the file content locally via
 the `Read` tool** (the cloud MCP can't reach the dev's working tree —
 security boundary).
 
-Call `mcp__rollout-server__analyze_codebase` with
+Call `use_mcp_tool(server_name="rollout-server", tool_name="analyze_codebase")` with
 `{ files, snippetsPerFile: { [path]: <file content> } }`. The tool returns
 `{ contexts: [{ path, kind, cohortKeyHint? }] }`. v1 detects HTTP handlers
 via regex; non-HTTP contexts return `kind: 'unknown'` with no cohort-key
@@ -741,22 +719,23 @@ used to return — downstream gates (`GATE-5-WRAP-SELECT` multi-select,
 
 > **Gate `GATE-5-WRAP-SELECT`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-5-WRAP-SELECT', questionHash, selectedOption,
 stepNumber: '5' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion` with multi-select options for each candidate (default to
+`ask_followup_question` with multi-select options for each candidate (default to
 high-confidence ones).
 
 For wrap-points where `cohortKeyExpression` is missing, prompt explicitly
 (per-symbol receipt — `GATE-5-COHORT-KEY-<symbol>` gate IDs are written
 dynamically; canonical group ID is `GATE-5-COHORT-KEY`):
 
-- Q: "What identifier should `<symbol>` use for cohort bucketing?"
-- Options: detected globals (`req.user.id`, `req.session.id`,
-  `ctx.userId`...) plus "Other (free text)".
+**Gate `GATE-5-COHORT-KEY`** — `ask_followup_question`:
+<question>What identifier should `<symbol>` use for cohort bucketing?</question>
+<options>[]</options>
+<!-- options also: detected globals (`req.user.id`, `req.session.id`, `ctx.userId`…) plus "Other (free text)" -->
 
 ### Sub-step 5.1 — Coherence grouping
 
@@ -781,19 +760,15 @@ disagree).
 
 > **Gate `GATE-5-COHERENCE-GROUPING`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-5-COHERENCE-GROUPING', questionHash, selectedOption,
 stepNumber: '5' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "How should these wrap-points ramp together?"
-- Options (always proposed in this top-to-bottom order):
-  - "All wrap-points enable together (single coherence group)"
-  - "Group as follows: <proposed grouping with cross-stack rationale>"
-  - "Each flag is independent (no coherence group)"
+**Gate `GATE-5-COHERENCE-GROUPING`** — `ask_followup_question`:
+<question>How should these wrap-points ramp together?</question>
+<options>["All wrap-points enable together (single coherence group)","Group as follows: <proposed grouping with cross-stack rationale>","Each flag is independent (no coherence group)"]</options>
 
 **Enforcement.** Within a coherence group, all flags MUST declare the
 **same cohort key** expression — the controller buckets users once per
@@ -837,20 +812,15 @@ out of any one OR add custom metrics via the gate below.
 > metric name); the canonical group ID written above is the static
 > anchor referenced by the manifest and receipt-guard predicates.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-6-ACCEPT-METRIC-<name>', questionHash, selectedOption,
 stepNumber: '6' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion` (multi-select, all three pre-checked):
-
-- Q: "Confirm the metrics to track for `<flag>`. The canonical three are pre-selected."
-- Options:
-  - "Adoption — `feature.<flag>.adopted` (Recommended)"
-  - "Health — `feature.<flag>.error` (Recommended)"
-  - "Latency — `feature.<flag>.duration_ms` (Recommended)"
-  - "Add custom metric (free text)"
+**Gate `GATE-6-ACCEPT-METRIC`** — `ask_followup_question` (multi-select):
+<question>Confirm the metrics to track for `<flag>`. The canonical three are pre-selected.</question>
+<options>["Adoption — `feature.<flag>.adopted`","Health — `feature.<flag>.error`","Latency — `feature.<flag>.duration_ms`","Add custom metric (free text)"]</options>
 
 If the user de-selects all three (no metric accepted), surface a
 warning popup and require explicit confirmation that they want to
@@ -859,8 +829,8 @@ ship with no metric guardrails:
 > **Gate `GATE-6-ZERO-METRIC-WARNING`** — required (only when no
 > metric accepted).
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-6-ZERO-METRIC-WARNING', questionHash, selectedOption,
 stepNumber: '6' }`.
 > 3. Do not proceed past this point without a successful receipt write.
@@ -879,11 +849,11 @@ human author wires the SDK manually for that language.
 
 For each grouped flag whose wrap points are all TypeScript:
 
-1. Call `mcp__fireweave-server-proxy__propose_sdk_install` with
+1. Call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="propose_sdk_install")` with
    `{ wrapPointFiles, providerSlug: flag.providerId, projectRoot }`.
    The response is `{ needsInstall, packageName, version }`.
 2. If `needsInstall === true`, call
-   `mcp__fireweave-server-proxy__generate_sdk_init_module` with
+   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="generate_sdk_init_module")` with
    `{ providerSlug: flag.providerId, projectRoot }` to get
    `{ filePath, contents }` for the `fireweave-flags` init module.
 3. Surface both proposals to the user as a single `Edit` review:
@@ -900,7 +870,7 @@ init-module file already exists at `filePath`; otherwise still emit it.
 
 ## Step 7 — Codegen
 
-Before applying any diffs, call `mcp__rollout-server__write_lockfile` with
+Before applying any diffs, call `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")` with
 `{ lastStep: 'codegen', diffApplied: false, workingSpec: <partial spec
 captured so far> }`. This way an interrupt before the first `Edit`
 restarts at Step 5 cleanly.
@@ -938,22 +908,18 @@ For each confirmed wrap point (grouped by its `flagKey`):
 
 > **Gate `GATE-7-CODEGEN-REVIEW`** — required (per file edited).
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-7-CODEGEN-REVIEW', questionHash, selectedOption,
 stepNumber: '7' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Apply the proposed wrap for `<wp.symbol>` in `<wp.file>`?"
-- Options:
-  - "Yes, apply this Edit (Recommended)"
-  - "Edit needs adjustment — revise and re-prompt"
-  - "Skip this wrap-point"
+**Gate `GATE-7-CODEGEN-REVIEW`** — `ask_followup_question`:
+<question>Apply the proposed wrap for `<wp.symbol>` in `<wp.file>`?</question>
+<options>["Yes, apply this Edit","Edit needs adjustment — revise and re-prompt","Skip this wrap-point"]</options>
 
 Once **the first** diff has been applied, immediately call
-`mcp__rollout-server__write_lockfile` again with `diffApplied: true`. From
+`use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")` again with `diffApplied: true`. From
 this point on the working tree is dirty — an interrupt resumes via the
 "Confirm or revert?" prompt in Step 0.
 
@@ -961,8 +927,8 @@ After all diffs are applied, this is a **Configuration step** — call
 `write_preferences` via `guarded_call`:
 
 1. Resolve the underlying tool name and server prefix
-   (`mcp__rollout-server__`, `write_preferences`).
-2. Call `mcp__rollout-server__guarded_call` with
+   (`rollout-server`, `write_preferences`).
+2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
    `{ serverPrefix, toolName, args: { config: <assembled RolloutConfig> },
 isConfigurationStep: true, expectedResponseSchema:
 'WritePreferencesResult' }`.
@@ -978,7 +944,7 @@ validated and the file is written atomically.
 
 ## Step 8 — Verification
 
-Run all seven `mcp__rollout-server__verify_*` tools, in order. Each returns
+Run all seven `use_mcp_tool(server_name="rollout-server", tool_name="verify")_*` tools, in order. Each returns
 `{ pass, findings: [...] }`. These are LOCAL tools because they inspect the
 dev's working tree.
 
@@ -986,17 +952,16 @@ If any check returns `pass: false` and the rule's policy is `block`:
 
 > **Gate `GATE-8-VERIFY-OVERRIDE`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-8-VERIFY-OVERRIDE', questionHash, selectedOption,
 stepNumber: '8' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-- `AskUserQuestion`:
-  - Q: "Verification failed: <count> findings. Block commit?"
-  - Options: "Block and let me fix" | "Add TODO comments and proceed" |
-    "Override (record reason)"
-- If override, prompt for reason (free text); record in `.fireweave/rollout.audit.log`.
+**Gate `GATE-8-VERIFY-OVERRIDE`** — `ask_followup_question`:
+<question>Verification failed: <count> findings. Block commit?</question>
+<options>["Block and let me fix","Add TODO comments and proceed","Override (record reason)"]</options>
+If **Override**, prompt for reason (free text); record in `.fireweave/rollout.audit.log`.
 
 Render a summary table of all findings before proceeding.
 
@@ -1026,22 +991,19 @@ Render the summary.
 
 > **Gate `GATE-8.5-REGISTER-OR-EDIT`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-8.5-REGISTER-OR-EDIT', questionHash, selectedOption,
 stepNumber: '8.5' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
+**Gate `GATE-8.5-REGISTER-OR-EDIT`** — `ask_followup_question`:
+<question>Register this rollout?</question>
+<options>["Yes, register and capture commit","Edit specific section…","Cancel"]</options>
+On **Edit specific section…** → jump back to the relevant step (4, 6, or 7);
+re-render the summary on return.
 
-- Q: "Register this rollout?"
-- Options:
-  - "Yes, register and capture commit (Recommended)"
-  - "Edit specific section…" → jump back to relevant step (4, 6, or 7);
-    re-render summary on return.
-  - "Cancel"
-
-Call `mcp__rollout-server__write_lockfile` with `{ lastStep: 'summary',
+Call `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")` with `{ lastStep: 'summary',
 diffApplied: true, workingSpec: <full spec> }` so an interrupt here
 resumes at this same panel.
 
@@ -1052,29 +1014,27 @@ The deploy gate needs a real commit SHA to track. Before calling
 
 > **Gate `GATE-9-SHA-READY`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-9-SHA-READY', questionHash, selectedOption,
 stepNumber: '9' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Ready to register? I'll need a commit SHA. Have you committed and pushed?"
-- Options:
-  - "Yes, on branch <auto-detected>" → run `git rev-parse HEAD` via Bash;
-    run `git symbolic-ref --short HEAD`; verify the SHA is reachable from
-    `origin/<branch>` (`git branch -r --contains <sha>` includes
-    `origin/<branch>`).
-  - "Not yet — exit so I can commit/push" → exit cleanly; print resume
-    command.
+**Gate `GATE-9-SHA-READY`** — `ask_followup_question`:
+<question>Ready to register? I'll need a commit SHA. Have you committed and pushed?</question>
+<options>["Yes, on branch <auto-detected>","Not yet — exit so I can commit/push"]</options>
+Then act on the selected option:
+- **Yes, on branch <auto-detected>** → run `git rev-parse HEAD` via Bash; run
+  `git symbolic-ref --short HEAD`; verify the SHA is reachable from
+  `origin/<branch>` (`git branch -r --contains <sha>` includes `origin/<branch>`).
+- **Not yet — exit so I can commit/push** → exit cleanly; print resume command.
 
 Once the SHA is captured, this is a **Configuration step** — call
 `register_rollout` via `guarded_call`:
 
 1. Resolve the underlying tool name and server prefix
-   (`mcp__fireweave-server-proxy__`, `register_rollout`).
-2. Call `mcp__rollout-server__guarded_call` with
+   (`fireweave-server-proxy`, `register_rollout`).
+2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
    `{ serverPrefix, toolName, args: { participant: { repo, branch,
 commitSha, joinedByUserId }, metadata: { name, description, type,
 environment }, providers, planJson }, isConfigurationStep: true,
@@ -1089,15 +1049,15 @@ On success the server creates the rollout, inserts the first participant,
 transitions the workflow to state `wrapping`, and returns
 `{ rolloutId, state: 'wrapping' }`.
 
-Immediately call `mcp__rollout-server__write_lockfile` with `{ lastStep:
+Immediately call `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")` with `{ lastStep:
 'register', rolloutId, workingSpec: <full spec>, diffApplied: true }`.
 
 This is a **Configuration step** — call `tag_baseline_commit` via
 `guarded_call`:
 
 1. Resolve the underlying tool name and server prefix
-   (`mcp__rollout-server__`, `tag_baseline_commit`).
-2. Call `mcp__rollout-server__guarded_call` with
+   (`rollout-server`, `tag_baseline_commit`).
+2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
    `{ serverPrefix, toolName, args: { rolloutId, commitSha },
 isConfigurationStep: true, expectedResponseSchema:
 'TagBaselineCommitResult' }`.
@@ -1109,7 +1069,7 @@ isConfigurationStep: true, expectedResponseSchema:
    detection finds this point.
 
 After Step 10 completes successfully, call
-`mcp__rollout-server__clear_lockfile` — the work is checkpointed in the
+`use_mcp_tool(server_name="rollout-server", tool_name="clear_lockfile")` — the work is checkpointed in the
 committed `rollout.config.json` and the server-side rollout row, so the
 local resume cache is no longer needed.
 
@@ -1122,20 +1082,15 @@ selection is "Skip" so existing flows keep working unchanged.
 
 > **Gate `GATE-9-COMMIT-AND-PR`** — required.
 >
-> 1. Call `AskUserQuestion` with the question and options below.
-> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+> 1. Call `ask_followup_question` with the question and options below.
+> 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="write_confirmation_receipt")` with
 >    `{ gateId: 'GATE-9-COMMIT-AND-PR', questionHash, selectedOption,
 stepNumber: '9.1' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
-`AskUserQuestion`:
-
-- Q: "Commit the wrap diff and open a PR for this rollout? (opt-in;
-  default Skip preserves the manual flow.)"
-- Options:
-  - "Skip — I'll commit + push manually" (default) → continue to
-    Step 10 without touching git.
-  - "Commit + open PR" → execute the commit + PR flow below.
+**Gate `GATE-9-COMMIT-AND-PR`** — `ask_followup_question`:
+<question>Commit the wrap diff and open a PR for this rollout? (opt-in; default Skip preserves the manual flow.)</question>
+<options>["Skip — I'll commit + push manually","Commit + open PR"]</options>
 
 **Commit + PR flow (only when the user selected "Commit + open PR"):**
 
@@ -1144,7 +1099,7 @@ stepNumber: '9.1' }`.
    `wrap(${flagKey}): ${featureName} — guard new code path`
    (substituting the primary `flagKey` from Step 4 and the
    `featureName` from Step 2). The skill MAY offer the message via a
-   follow-up `AskUserQuestion` for edit; the default is the template
+   follow-up `ask_followup_question` for edit; the default is the template
    verbatim.
 2. Run `git add -A` then `git commit -m "<message>"` via Bash. On
    non-zero exit, print stderr and stop — do not retry.
@@ -1194,7 +1149,7 @@ Print a markdown summary covering:
 - **Never** invoke the slash command `/fw-rollout` recursively.
 - **Never** call provider APIs directly — always go through MCP tools.
 - **Never** write to `.fireweave/rollout.config.json` except via
-  `mcp__rollout-server__write_preferences`.
+  `use_mcp_tool(server_name="rollout-server", tool_name="write_preferences")`.
 - **Never** mint, store, or send a Bearer token from inside the skill —
   authentication is owned by the `fw` CLI and the `fw-auth-gate.sh`
   hook. The MCP transport reads `FIREWEAVE_CLI_TOKEN` /

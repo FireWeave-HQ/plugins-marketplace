@@ -37,20 +37,26 @@ fw doctor          # runs all diagnostics, never gates
 
 ## 2. First-time setup
 
-Three one-time steps per repo:
+One guided command sets up a repo end to end:
 
-### 2.1 — Initialise the repo
+### 2.1 — Set up the repo
 
 ```bash
 cd <your-repo>
-fw repo init
+fw init
 ```
 
-This creates `.fireweave/.gitignore` (so the local `.cache/` directory
-isn't committed) and ensures `.fireweave/rollout.config.json` is on the
-current schema. Idempotent — safe to run again later.
+`fw init` is the whole walkthrough: it scaffolds `.fireweave/` (creating
+`.fireweave/.gitignore` so the local `.cache/` directory isn't committed,
+and `.fireweave/rollout.config.json` on the current schema), lets you pick
+or log into a profile, and binds a project — then prints a diff of what
+changed vs. what stayed. Idempotent and re-runnable: run it again any time
+to reconfigure.
 
-### 2.2 — Authenticate
+The two commands it composes are also available standalone — use them to
+do a single step, or to change auth or project later:
+
+### 2.2 — Authenticate (`fw login`)
 
 ```bash
 fw login --cloud         # production (default)
@@ -68,7 +74,7 @@ This kicks off an OAuth device flow:
 You only need to do this once per machine — tokens auto-refresh near
 expiry via the `fw-auth-gate.sh` hook (Level 3, silent).
 
-### 2.3 — Bind a project
+### 2.3 — Bind / re-point a project (`fw select-project`)
 
 ```bash
 fw select-project
@@ -108,7 +114,7 @@ levels:
   ("run `fw login` manually and retry").
 
 The hook is **scoped**: matchers are `^/fireweave:` for slash commands
-and `Skill(skill='safe-rollout|create-task')` for skill dispatch.
+and `Skill(skill='safe-rollout')` for skill dispatch.
 Other prompts and other plugins are untouched.
 
 ---

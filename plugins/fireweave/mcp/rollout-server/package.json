@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "@fireweaveai/fw-rollout-types": "../../../../../../fw-rollout-types",
+    "@fireweaveai/contracts": "../../../../../../contracts",
     "simple-git": "^3.27.0",
     "zod": "^3.24.1"
   },

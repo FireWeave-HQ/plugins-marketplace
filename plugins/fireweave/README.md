@@ -4,7 +4,7 @@ Skills for working with FireweaveAI directly from your AI coding tool.
 
 ## Skills
 
-- **create-task** — File a new Fireweave task from the current editor context (selection, error, current branch).
+- **safe-rollout** — Wrap new code behind one or more Fireweave-managed feature flags with cohort-keyed telemetry, then register a Restate-backed controller that ramps the rollout safely (auto-promote / rollback). Invoke via `/fireweave:safe-rollout`.
 
 ## Install
 
@@ -15,7 +15,9 @@ Skills for working with FireweaveAI directly from your AI coding tool.
 
 ## Configuration
 
-This plugin expects two environment variables to be available to the AI tool's shell:
+Authentication is handled by the `fw` CLI: the plugin's auth hook runs `fw status` (and an inline OAuth device flow if needed) before any skill runs. Install the CLI and sign in:
 
-- `FIREWEAVE_API_URL` — base URL of your Fireweave deployment (e.g. `https://api.fireweave.ai`)
-- `FIREWEAVE_API_TOKEN` — personal access token from your Fireweave settings page
+- `bun install -g @fireweaveai/cli`
+- `fw login --cloud` (production) or `fw login --local` (Fireweave engineers)
+
+See [`.claude-plugin/SETUP.md`](.claude-plugin/SETUP.md) for the full setup and troubleshooting guide.

@@ -2,7 +2,9 @@
 
 > Scaffold a new FireweaveAI integration package. Trigger when the user says "create a new integration", "add a Fireweave integration for X", "scaffold an integration plugin", or asks to start building a connector for an external tool. Generates the package directory, manifest, Dockerfile, and entry point matching the conventions in packages/integration-sdk.
 >
-> _This workflow is user-triggered (Cline does not auto-activate workflows). Run with `/fw-scaffold-integration`._
+> _User-triggered (Cline does not auto-activate workflows). Run with `/fw-scaffold-integration.md`._
+
+> Interaction: gate each decision with `ask_followup_question` (one question per call; supply an `<options>` array). For multi-question groups, ask sequentially.
 
 # Scaffold a Fireweave Integration
 

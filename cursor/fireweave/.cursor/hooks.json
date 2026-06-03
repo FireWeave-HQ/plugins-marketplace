@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeMCPExecution": [
+      {
+        "command": "${workspaceFolder}/hooks/fw-auth-gate-core.sh",
+        "timeout": 30
+      }
+    ]
+  }
+}

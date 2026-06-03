@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "rollout-server": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/mcp/rollout-server/launcher.sh",
+      "args": [],
+      "env": {
+        "FW_PLUGIN_ROOT": "${workspaceFolder}/mcp/rollout-server"
+      }
+    },
+    "fireweave-cloud-bridge": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/mcp/fireweave-cloud-bridge/launcher.sh",
+      "args": [],
+      "env": {
+        "FW_PLUGIN_ROOT": "${workspaceFolder}/mcp/fireweave-cloud-bridge"
+      }
+    }
+  }
+}
