@@ -31,48 +31,40 @@ rollouts so they can be paused/rolled back independently.
 
 ## Tool surfaces
 
-This skill uses **three MCP servers** (configured in `.mcp.json`):
+This skill works across **two** surfaces:
 
-- **`fireweave-cloud-bridge`** — stdio MCP shim that translates MCP
-  `tools/call` into authenticated `${bridgeUrl}/v1/*` REST calls.
-  Bearer-authenticated via the active `fw` CLI profile's token. Tools
-  surface as `use_mcp_tool(server_name="fireweave-cloud-bridge", tool_name="<name>")`. The bridge replaces
-  the deprecated cloud-side MCP server (pitch 033) — there is only one
-  routing endpoint now, controlled by the bridge's `bridgeUrl`.
+- **`rollout-server`** — a local stdio MCP server (configured in
+  `.mcp.json`). It owns every operation that genuinely requires the
+  developer's local filesystem or git tree: the lockfile, confirmation
+  receipts, the preferences file, baseline detection, code-tagging,
+  `analyze_codebase`, `generate_wrapper`, the seven `verify_*` tools that
+  inspect local code, and `guarded_call`. Tools surface as
+  `use_mcp_tool(server_name="rollout-server", tool_name="<name>")`.
 
-- **`rollout-server`** — local stdio. Owns operations that genuinely require
-  the developer's local filesystem or git tree: lockfile, preferences file,
-  baseline detection, code-tagging, and the seven verification tools that
-  inspect local code. Tools surface as `use_mcp_tool(server_name="rollout-server", tool_name="<name>")`.
+- **`fw api`** — the `fw` CLI's hidden, authenticated REST passthrough to
+  fw-server. Invoke it via `Bash: fw api <METHOD> <path> [--body '<json>']`.
+  It prints exactly one JSON line: on success the response body, on failure
+  `{ "error": { "httpStatus": N, "message": "..." } }` together with a
+  non-zero exit code. The CLI owns authentication end-to-end — it attaches
+  the bearer token and silently refreshes it on a 401 — so the skill **never
+  handles a bearer token, never sees an `Authorization` header, and never
+  configures an endpoint**. Cloud reads call `fw api` directly via `Bash`;
+  cloud writes/config go through `guarded_call` (which shells out to
+  `fw api` for you) so failures are classified and half-state is recorded.
 
-### Endpoint configuration (fw-platform engineers only)
-
-The bridge talks to one Fireweave endpoint, sourced from the active
-`fw` CLI profile's `server_url`. Production end-users do NOT configure
-this — `fw login` writes the cloud endpoint into the profile and the
-bridge reads it from there.
-
-Fireweave platform engineers working on `fw-server` itself can point
-the bridge at a local server by setting the `bridgeUrl` environment
-variable (or by running `fw login` against a local profile that
-records a `localhost` `server_url`). The bridge's behaviour is
-otherwise identical against cloud vs. local — no mode toggle, no
-runtime branch.
-
-| Audience              | `bridgeUrl` / profile `server_url`                          | Token env var         |
-| --------------------- | ----------------------------------------------------------- | --------------------- |
-| Production end-users  | `https://app-server.fireweave.ai/v1` (written by `fw login`)    | `FIREWEAVE_CLI_TOKEN` |
-| fw-platform engineers | `http://localhost:3000/v1` via `bridgeUrl` env (or profile) | `FIREWEAVE_CLI_TOKEN` |
-
-**Auth**: Bearer auth happens at the MCP transport layer via the
-`Authorization` header (set in `.mcp.json`). The `fw-auth-gate.sh` hook
-guarantees a fresh token is in the env before this skill runs — you do
-NOT need to handle 401s in the happy path. If a 401 ever does surface
-mid-skill (token revoked, network anomaly), abort cleanly with: _"MCP
+**Auth**: authentication is fully owned by the `fw` CLI. The
+`fw-auth-gate.sh` hook guarantees a fresh token before this skill runs and
+`fw api` refreshes tokens on its own, so you do NOT handle 401s in the happy
+path. If `fw api` ever exits non-zero with `{ error: { httpStatus: 401 } }`
+mid-skill (token revoked, network anomaly), abort cleanly with: _"`fw api`
 returned 401 mid-skill. Run `fw doctor` then retry `/fw-rollout`."_
 
+**On any `fw api` read failure** (non-zero exit / an `{ error: { httpStatus
+} }` envelope on stdout), surface the error to the user and stop — do NOT
+invent data. On success, parse the JSON printed on stdout.
+
 **Never invent file paths, flag keys, metric queries, or rollout IDs.** Use
-the MCP tools for every decision.
+the tools for every decision.
 
 ## Step 0 (resume guard) — runs BEFORE everything else
 
@@ -110,7 +102,7 @@ stepNumber: '0' }`.
 
 - `lastStep === 'summary'` — jump to **Step 8.5** (re-show summary preview).
 - `lastStep === 'register' && state.rolloutId` — jump to the **post-register
-  status path**: call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_status")` with the
+  status path**: run `Bash: fw api GET /v1/rollouts/<rolloutId>` with the
   recorded `rolloutId`, render the current state, and offer the appropriate
   action buttons (Cancel for non-terminal, ack-alerts always available).
 
@@ -119,7 +111,7 @@ stepNumber: '0' }`.
 If the lockfile has a `rolloutId`, also check for branch-HEAD divergence
 before resuming:
 
-1. Call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_status")(rolloutId)`.
+1. Run `Bash: fw api GET /v1/rollouts/<rolloutId>` and parse the JSON.
 2. Find the participant for THIS repo by matching `participant.repo` against
    `git remote get-url origin` (parsed to `org/repo`).
 3. If a matching participant is found, compare `participant.commitSha`
@@ -140,7 +132,7 @@ stepNumber: '0' }`.
    Then act on the selected option:
    - **Yes, update** → this is a **Configuration step** — call via `guarded_call`:
      1. Resolve the underlying tool name and server prefix
-        (`fireweave-server-proxy`, `update_participant_sha`).
+        (`fireweave-api`, `update_participant_sha`).
      2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
         `{ serverPrefix, toolName, args, isConfigurationStep: true,
         expectedResponseSchema: 'UpdateParticipantShaResult' }`.
@@ -162,7 +154,7 @@ the `drafting` and `wrapping` states — once the rollout is `sealed`,
 `ramping`, `completed`, or `rolled-back`, the spec is frozen per CL6 and the
 only option presented is "Start a new rollout" (covered below).
 
-1. Call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_status")(rolloutId)` and read
+1. Run `Bash: fw api GET /v1/rollouts/<rolloutId>` and read
    `rollout.state`, `rollout.specVersion`, and the registered spec.
 2. If `state ∈ { drafting, wrapping }`, we diff the current worktree against
    the registered spec (wrap-points added, removed, threshold or cohort-key
@@ -186,7 +178,7 @@ stepNumber: '0' }`.
    - **Yes, update the spec** → this is a **Configuration step** — call via
      `guarded_call`:
      1. Resolve the underlying tool name and server prefix
-        (`fireweave-server-proxy`, `update_rollout_spec`).
+        (`fireweave-api`, `update_rollout_spec`).
      2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
         `{ serverPrefix, toolName, args: { rolloutId, deltaJson,
         expectedSpecVersion: rollout.specVersion }, isConfigurationStep: true,
@@ -224,17 +216,18 @@ from the right place.** After `register_rollout` succeeds at Step 9, call
 Auth and project binding are guaranteed by the `fw-auth-gate.sh` hook
 that fired when this skill was invoked — by the time you read this, the
 user is authenticated and has a project bound. You do **NOT** need to
-call `whoami`, `list_projects`, or run a device flow. Those are now CLI
+call `whoami`, list projects, or run a device flow. Those are now CLI
 responsibilities, not LLM judgment.
 
 Run `Bash: fw status --machine-readable` and parse the JSON. Bind the
 returned `org`, `project`, and `tokenExpiresAt` into your working
-memory. Cloud-routed tools surface as `use_mcp_tool(server_name="fireweave-cloud-bridge", tool_name="<name>")`;
-the bridge translates each `tools/call` into a `${bridgeUrl}/v1/*` REST
-call against the endpoint recorded in the active `fw` profile. The four
-Wave-A aliased tools (`list_projects`, `recommend_rollout_strategy`,
-`propose_metrics`, `extract_diff_surface`) are reached via
-`use_mcp_tool(server_name="rollout-server", tool_name="<name>")` during the deprecation window.
+memory. Cloud operations are reached through the `fw api` REST passthrough
+(`Bash: fw api <METHOD> <path>`) — reads call it directly, writes/config go
+through `guarded_call`. Three local rollout-server tools
+(`extract_diff_surface`, `recommend_rollout_strategy`, `propose_metrics`)
+run entirely on this machine and are reached via
+`use_mcp_tool(server_name="rollout-server", tool_name="<name>")` — they are stable local tools, not cloud
+forwarders.
 
 If for some reason `fw status` returns `ready: false` despite the hook
 having fired (race condition, env-var clearing mid-session, network
@@ -248,15 +241,16 @@ After capturing the resolved context, proceed to Step 0.1b.
 
 ## Step 0.1b — MCP manifest check
 
-Call `use_mcp_tool(server_name="rollout-server", tool_name="list_registered_tools")` and
-`use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_registered_tools")` (the latter
-discovers upstream tools via the cloud's MCP `listTools` handshake).
+Call `use_mcp_tool(server_name="rollout-server", tool_name="list_registered_tools")`.
 
-Compare the union against `SKILL_EXPECTED_TOOL_MANIFEST` (declared
+Compare the result against `SKILL_EXPECTED_TOOL_MANIFEST` (declared
 inline below). If any expected tool is missing, registered on the
 wrong server, or any unknown tool is registered on a server that the
 skill calls into (and a downstream call might shadow a known name),
 hard-abort with code `MANIFEST_MISMATCH` and a list of differences.
+
+Cloud operations are reached via `fw api` (the `fw` CLI), not an MCP
+server, so there is no cloud tool manifest to verify.
 
 This sub-step is the only place the skill is allowed to enumerate
 MCP server contents; downstream steps assume the manifest is correct.
@@ -272,7 +266,6 @@ MCP server contents; downstream steps assume the manifest is correct.
     { "name": "guarded_call", "server": "rollout-server" },
     { "name": "get_tool_usage_counts", "server": "rollout-server" },
     { "name": "list_registered_tools", "server": "rollout-server" },
-    { "name": "list_registered_tools", "server": "fireweave-server-proxy" },
     { "name": "ensure_auth", "server": "rollout-server" },
     { "name": "select_project", "server": "rollout-server" },
     { "name": "detect_baseline", "server": "rollout-server" },
@@ -289,41 +282,17 @@ MCP server contents; downstream steps assume the manifest is correct.
     { "name": "verify_rollout_config_schema", "server": "rollout-server" },
     { "name": "verify_provider_health", "server": "rollout-server" },
     {
-      "name": "list_projects",
-      "server": "rollout-server",
-      "aliasOf": "fireweave-server-proxy"
-    },
-    {
       "name": "recommend_rollout_strategy",
-      "server": "rollout-server",
-      "aliasOf": "fireweave-server-proxy"
+      "server": "rollout-server"
     },
     {
       "name": "propose_metrics",
-      "server": "rollout-server",
-      "aliasOf": "fireweave-server-proxy"
+      "server": "rollout-server"
     },
     {
       "name": "extract_diff_surface",
-      "server": "rollout-server",
-      "aliasOf": "fireweave-server-proxy"
-    },
-    { "name": "list_open_rollouts", "server": "fireweave-server-proxy" },
-    { "name": "list_project_repos", "server": "fireweave-server-proxy" },
-    { "name": "get_project_capabilities", "server": "fireweave-server-proxy" },
-    { "name": "list_project_environments", "server": "fireweave-server-proxy" },
-    { "name": "get_rollout_history", "server": "fireweave-server-proxy" },
-    { "name": "get_rollout_learnings", "server": "fireweave-server-proxy" },
-    { "name": "propose_wrap_points", "server": "fireweave-server-proxy" },
-    { "name": "propose_sdk_install", "server": "fireweave-server-proxy" },
-    { "name": "generate_sdk_init_module", "server": "fireweave-server-proxy" },
-    { "name": "generate_rollout_codegen", "server": "fireweave-server-proxy" },
-    { "name": "summarize_rollout", "server": "fireweave-server-proxy" },
-    { "name": "register_rollout", "server": "fireweave-server-proxy" },
-    { "name": "update_participant_sha", "server": "fireweave-server-proxy" },
-    { "name": "update_rollout_spec", "server": "fireweave-server-proxy" },
-    { "name": "get_rollout_status", "server": "fireweave-server-proxy" },
-    { "name": "get_recommendation_data", "server": "fireweave-cloud-bridge" }
+      "server": "rollout-server"
+    }
   ]
 }
 ```
@@ -336,9 +305,9 @@ Mode and project come from `fw status` (Step 0.1). The remaining
 discovery calls below need server state at skill-run time, so they stay
 in the skill:
 
-1. **Multi-rollout coexistence (D21).** Call
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_open_rollouts")` with the projectId. If
-   any open rollouts exist (`state ∈ {drafting, wrapping}`):
+1. **Multi-rollout coexistence (D21).** Run
+   `Bash: fw api GET /v1/projects/<projectId>/rollouts` and parse the JSON.
+   If any open rollouts exist (`state ∈ {drafting, wrapping}`):
 
    > **Gate `GATE-0.2-JOIN-OR-CREATE`** — required.
    >
@@ -356,8 +325,8 @@ stepNumber: '0.2' }`.
    using the existing rollout's `flagKey` + `providers`. The skill becomes the
    JOIN path, not the CREATE path.
 
-2. **Multi-repo coordination (D6).** Call
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_project_repos")` with the projectId. If
+2. **Multi-repo coordination (D6).** Run
+   `Bash: fw api GET /v1/projects/<projectId>/repos` and parse the JSON. If
    the project has > 1 repo connected:
 
    > **Gate `GATE-0.2-MULTI-REPO`** — required.
@@ -375,9 +344,10 @@ stepNumber: '0.2' }`.
    records these as advisory in the spec; coordination happens via teammates
    running `/fw-rollout` in those repos against the same rolloutId.
 
-3. **Capability discovery.** Call
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_project_capabilities")` to enumerate which
-   provider implements each capability for this project. A rollout requires
+3. **Capability discovery.** Run
+   `Bash: fw api GET /v1/projects/<projectId>/capabilities` and parse the
+   JSON to enumerate which provider implements each capability for this
+   project. A rollout requires
    bindings for ALL SIX capabilities below. For every capability that has
    no provider, present a per-capability missing-config gate (`ask_followup_question`
    with the three-option pattern), then record the most recent unbound
@@ -512,8 +482,8 @@ stepNumber: '0.2' }`.
    Once all six capabilities resolve, clear `lastConfigGap` on the next
    lockfile write and continue to step 4 below.
 
-4. **Environment selection (D13).** Call
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="list_project_environments")`.
+4. **Environment selection (D13).** Run
+   `Bash: fw api GET /v1/projects/<projectId>/environments` and parse the JSON.
 
    > **Gate `GATE-0.2-ENVIRONMENT-CHOICE`** — required.
    >
@@ -533,11 +503,10 @@ stepNumber: '0.2' }`.
    fw-rollout commit, last release tag, last green CI sha, current
    main).
 
-6. **Rollout history defaults.** Call
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_history")` and
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_rollout_learnings")` for this project. v1
-   stubs return defaults; use them to inform smart defaults at Steps 3
-   and 6.
+6. **Rollout history defaults.** History/learnings enrichment is deferred —
+   there is no `fw api` route for it yet. Skip any cloud call here and use
+   conservative inline defaults to inform the smart defaults at Steps 3 and 6
+   (treat the project as having no prior-rollout signal).
 
 7. **Lockfile checkpoint.** Call `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")`
    with the discovery-checkpoint shape below. The `lastConfigGap` field
@@ -573,11 +542,13 @@ stepNumber: '1' }`.
 
 If the user chose any diff option:
 
-1. Run the corresponding `git diff <baseRef>..<headRef> --name-status` via
-   `Bash` (the local git access that the cloud MCP can't do).
-2. Pass the diff text into `use_mcp_tool(server_name="rollout-server", tool_name="extract_diff_surface")` —
-   the cloud tool parses the diff into a structured `{ files, symbols }`
-   shape.
+1. Resolve the chosen option to the `baseRef`/`headRef` pair (e.g. the
+   `detect_baseline` commit, the last release tag, a custom ref).
+2. Call `use_mcp_tool(server_name="rollout-server", tool_name="extract_diff_surface")` with
+   `{ fromRef: <baseRef>, toRef: <headRef> }` (optionally `repoRoot`). The
+   tool runs `git diff --name-status <fromRef>..<toRef>` locally and returns
+   a structured `{ files, changedRoutes, changedTests, changedSymbols }`
+   surface — you do **not** run git yourself or pass diff text.
 3. Present a confirm popup of detected files (multi-select, default-all).
 
 If the user chose "First-time wrap":
@@ -639,8 +610,8 @@ stepNumber: '2' }`.
 
 ## Step 3 — Rollout style (scenario-aware)
 
-Call `use_mcp_tool(server_name="fireweave-cloud-bridge", tool_name="get_recommendation_data")` with
-`{ projectId }`. This returns recent rollouts + outcomes for the project —
+Run `Bash: fw api GET /v1/projects/<projectId>/rollouts/recommendation-data`
+and parse the JSON. This returns recent rollouts + outcomes for the project —
 raw data, not a pre-cooked recommendation.
 
 **Synthesise the recommendation INLINE** using your own reasoning. Consider:
@@ -673,7 +644,7 @@ stepNumber: '3' }`.
 ## Step 4 — Capability resolution
 
 Capabilities resolved already in Step 0.2 sub-step 3 via
-`use_mcp_tool(server_name="fireweave-server-proxy", tool_name="get_project_capabilities")`. For any capability still
+`fw api GET /v1/projects/<projectId>/capabilities`. For any capability still
 unbound (`null` in the map):
 
 > **Gate `GATE-4-PROVIDER-BINDING`** — required (per unbound capability).
@@ -847,26 +818,34 @@ the literal message `SDK auto-install for Python is not yet supported`
 (substitute the actual language) and skip both sub-steps below — the
 human author wires the SDK manually for that language.
 
+This pass is **fully local** — it inspects the developer's own
+`package.json` and emits an init module on disk; there is no cloud call.
+
 For each grouped flag whose wrap points are all TypeScript:
 
-1. Call `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="propose_sdk_install")` with
-   `{ wrapPointFiles, providerSlug: flag.providerId, projectRoot }`.
-   The response is `{ needsInstall, packageName, version }`.
-2. If `needsInstall === true`, call
-   `use_mcp_tool(server_name="fireweave-server-proxy", tool_name="generate_sdk_init_module")` with
-   `{ providerSlug: flag.providerId, projectRoot }` to get
-   `{ filePath, contents }` for the `fireweave-flags` init module.
-3. Surface both proposals to the user as a single `Edit` review:
+1. **Detect whether the SDK is installed.** Read the project's
+   `package.json` (via the `Read` tool at `<projectRoot>/package.json`) and
+   check whether the provider's SDK package appears under `dependencies` or
+   `devDependencies`. The package name is the Fireweave-flags client for the
+   bound provider (`flag.providerId`). Treat a present entry as
+   `needsInstall === false`; otherwise `needsInstall === true`.
+2. **Compose the init module inline.** If the SDK is missing OR the init
+   module does not yet exist on disk, compose the `fireweave-flags` init
+   module yourself for the bound provider (the small module that constructs
+   the provider client and exports the `flag` handle the wrap points
+   import). Default its path to the project's source root (e.g.
+   `src/fireweave-flags.ts`).
+3. **Surface both proposals to the user as a single `Edit` review:**
    - The `package.json` dependency add (one line under `dependencies`)
-     showing `packageName` at `version`.
-   - The new init-module file at `filePath` with its full `contents`.
+     showing the SDK package at its current version.
+   - The new init-module file with its full contents.
      Apply both diffs alongside the codegen diffs in Step 7 below — they
      are part of the same review surface, so the user accepts or rejects
      the SDK install + codegen in one pass.
 
-If `needsInstall === false` (SDK already present in `dependencies` or
-`devDependencies`), skip the init-module generation only when the
-init-module file already exists at `filePath`; otherwise still emit it.
+If the SDK is already present in `dependencies` or `devDependencies`, skip
+the init-module emission only when the init-module file already exists on
+disk; otherwise still emit it.
 
 ## Step 7 — Codegen
 
@@ -1030,15 +1009,61 @@ Then act on the selected option:
 - **Not yet — exit so I can commit/push** → exit cleanly; print resume command.
 
 Once the SHA is captured, this is a **Configuration step** — call
-`register_rollout` via `guarded_call`:
+`register_rollout` via `guarded_call`. The wire shape is **flat** (it mirrors
+fw-server's `POST /v1/rollouts` body, the single source of truth in
+`@fireweaveai/contracts`):
 
 1. Resolve the underlying tool name and server prefix
-   (`fireweave-server-proxy`, `register_rollout`).
+   (`fireweave-api`, `register_rollout`).
 2. Call `use_mcp_tool(server_name="rollout-server", tool_name="guarded_call")` with
-   `{ serverPrefix, toolName, args: { participant: { repo, branch,
-commitSha, joinedByUserId }, metadata: { name, description, type,
-environment }, providers, planJson }, isConfigurationStep: true,
-expectedResponseSchema: 'RegisterRolloutResult' }`.
+   `{ serverPrefix, toolName, args, isConfigurationStep: true,
+expectedResponseSchema: 'RegisterRolloutResult' }`, where `args` is the flat
+   shape:
+
+   ```jsonc
+   {
+     "projectId": "<from `fw status`>",
+     "name": "<Step 2>",
+     "description": "<Step 2>",
+     "type": "<Step 2 featureType>",
+     "environment": "<Step 0.2 / Step 2>",
+     "primaryRepo": "<optional>",
+     "providers": { /* optional: capabilityId → providerId */ },
+     "planJson": { /* optional: the Step 3 plan (style + schedule) */ },
+     "spec": {
+       "metrics": [ /* from Step 3.2 / GATE metrics confirmation */ ],
+       "rollout": { "guardrails": [ /* from Step 3 plan */ ] },
+       "wrapPoints": [ /* from Step 6 wrap diff */ ]
+     },
+     "flags": [
+       {
+         "flagKey": "...",
+         "flagProviderId": "...",
+         "flagType": "boolean | multivariate",
+         "safeDefault": false,
+         "isPrimary": true
+       }
+       /* …one entry per flag (optional) */
+     ],
+     "firstParticipant": {
+       "repo": "...",
+       "branch": "...",
+       "commitSha": "<git rev-parse HEAD>",
+       "prNumber": null
+     }
+   }
+   ```
+
+   `joinedByUserId` is injected server-side — do **NOT** send it. `name`,
+   `description`, `type`, and `environment` are top-level (no `metadata`
+   wrapper). The participant is `firstParticipant` (renamed from
+   `participant`). `primaryRepo`, `providers`, `planJson`, `spec`, and `flags`
+   are optional. When omitted, `register_rollout` auto-merges them from
+   `.fireweave/rollout.config.json` (written in Step 7 via `write_preferences`)
+   before POSTing to fw-server — including `spec.metrics`,
+   `spec.rollout.guardrails`, `spec.wrapPoints`, and `planJson.schedule`.
+   You MAY still send them explicitly; explicit `spec` with any metrics,
+   guardrails, or wrap points is never overwritten.
 3. If the response shape is `{ error: { code, ... } }`, print the
    `remediation` field verbatim and stop. Do not retry, do not call the
    underlying tool directly, do not call another tool.
@@ -1118,8 +1143,9 @@ create --fill --web=false` fails for any reason, print the
    GitHub compare URL derived from the push remote
    (`https://github.com/<owner>/<repo>/compare/<branch>?expand=1`).
 7. On `gh pr create` success, parse the returned PR URL from stdout
-   and call the `record_pr_url` MCP tool via `guarded_call` with
-   `{ rolloutId, prUrl }`. The server persists `prUrl` on the
+   and record it via `guarded_call` with `{ serverPrefix:
+   'fireweave-api', toolName: 'record_pr_url', args: { rolloutId,
+   prUrl }, isConfigurationStep: true }`. The server persists `prUrl` on the
    rollout row via the `record_pr_url` use-case.
 
 The commit + PR step is purely additive — failing it never breaks
@@ -1147,13 +1173,14 @@ Print a markdown summary covering:
 ## Universal rules
 
 - **Never** invoke the slash command `/fw-rollout` recursively.
-- **Never** call provider APIs directly — always go through MCP tools.
+- **Never** call provider APIs directly — always go through the
+  `rollout-server` MCP tools or the `fw api` passthrough.
 - **Never** write to `.fireweave/rollout.config.json` except via
   `use_mcp_tool(server_name="rollout-server", tool_name="write_preferences")`.
 - **Never** mint, store, or send a Bearer token from inside the skill —
   authentication is owned by the `fw` CLI and the `fw-auth-gate.sh`
-  hook. The MCP transport reads `FIREWEAVE_CLI_TOKEN` /
-  `FIREWEAVE_LOCAL_CLI_TOKEN` from the env that the hook populated.
+  hook. `fw api` attaches and refreshes the token itself; the skill
+  never touches `Authorization` headers or token env vars.
 - **Always** ack the user before destructive actions (delete flag, override
   verification, abort an in-flight rollout).
 - **Always** write the lockfile at every step boundary so a crash is

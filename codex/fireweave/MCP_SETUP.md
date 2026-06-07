@@ -1,9 +1,8 @@
 # Fireweave MCP servers — one-time setup (codex)
 
-This plugin bundles 2 MCP server(s):
+This plugin bundles 1 MCP server(s):
 
 - `rollout-server`
-- `fireweave-cloud-bridge`
 
 On **codex** the server launch path must be written into the host's config with
 an **absolute** path (this host has no plugin-root variable like Claude's

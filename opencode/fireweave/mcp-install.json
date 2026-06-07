@@ -4,10 +4,6 @@
     {
       "name": "rollout-server",
       "launcherRelPath": "mcp/rollout-server/launcher.sh"
-    },
-    {
-      "name": "fireweave-cloud-bridge",
-      "launcherRelPath": "mcp/fireweave-cloud-bridge/launcher.sh"
     }
   ]
 }
