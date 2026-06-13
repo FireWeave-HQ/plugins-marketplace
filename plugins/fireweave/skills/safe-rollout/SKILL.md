@@ -56,12 +56,26 @@ This skill works across **two** surfaces:
   cloud writes/config go through `guarded_call` (which shells out to
   `fw api` for you) so failures are classified and half-state is recorded.
 
+**Cloud operations** (the `guarded_call` dispatch table; pinned in the
+rollout-server's `cloud-op-manifest`). Writes/config (`isConfig`, always
+via `guarded_call`): `register_rollout`, `add_rollout_participant`,
+`update_participant_sha`, `withdraw_participant`, `update_rollout_spec`,
+`finalize_rollout`, `seal_rollout`, `cancel_rollout`, `record_pr_url` —
+nine ops. Reads (call `fw api` directly): `get_rollout_status`
+(`GET /v1/rollouts/{id}`), `list_open_rollouts`, `list_project_repos`,
+`list_project_environments`, `get_project_capabilities`,
+`get_recommendation_data` — six ops. Path params in `{braces}` are passed
+as flat args (e.g. `id`, `participantId`) and consumed into the URL; the
+remaining args form the request body.
+
 **Auth**: authentication is fully owned by the `fw` CLI. The
 `fw-auth-gate.sh` hook guarantees a fresh token before this skill runs and
 `fw api` refreshes tokens on its own, so you do NOT handle 401s in the happy
 path. If `fw api` ever exits non-zero with `{ error: { httpStatus: 401 } }`
 mid-skill (token revoked, network anomaly), abort cleanly with: _"`fw api`
 returned 401 mid-skill. Run `fw doctor` then retry `/fw-rollout`."_
+
+`fw api` resolves the profile pinned for this repo (personal pin in gitignored `.fireweave/local.json`, org-match against committed `.fireweave/project.json` otherwise); `--profile <alias>` overrides for one call. The skill never selects profiles itself.
 
 **On any `fw api` read failure** (non-zero exit / an `{ error: { httpStatus
 } }` envelope on stdout), surface the error to the user and stop — do NOT
@@ -107,10 +121,132 @@ stepNumber: '0' }`.
     `mcp__rollout-server__clear_lockfile`; restart from Step 0.1.
 
 - `lastStep === 'summary'` — jump to **Step 8.5** (re-show summary preview).
-- `lastStep === 'register' && state.rolloutId` — jump to the **post-register
-  status path**: run `Bash: fw api GET /v1/rollouts/<rolloutId>` with the
-  recorded `rolloutId`, render the current state, and offer the appropriate
+- `lastStep === 'created' && state.rolloutId` — the draft rollout already
+  exists server-side (state `drafting`); the local work (wrap points,
+  metrics, codegen) may be incomplete. Branch on `state.diffApplied`:
+
+  - **`state.diffApplied === true`** — diffs from the previous run are in
+    the working tree; present `GATE-0-RESUME-DECISION` (the diffs
+    question) with the draft-aware option set:
+
+    > **Gate `GATE-0-RESUME-DECISION`** — required.
+    >
+    > 1. Call `AskUserQuestion` with the question and options below.
+    > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+    >    `{ gateId: 'GATE-0-RESUME-DECISION', questionHash, selectedOption,
+stepNumber: '0' }`.
+    > 3. Do not proceed past this point without a successful receipt write.
+
+**Gate `GATE-0-RESUME-DECISION`** — call `AskUserQuestion`:
+- Q: Diffs from a previous run are in your working tree. What would you like to do?
+- Options:
+  - Resume the draft rollout (Recommended)
+  - Cancel draft rollout
+  - Withdraw my participation
+  - _Offer "Withdraw my participation" ONLY when state.participantId is present AND get_rollout_status shows more than one participant — the server never removes the last participant._
+
+  - **`state.diffApplied` is `false` or absent** — there are NO diffs to
+    decide about, so the diffs question above would be nonsense. Present
+    `GATE-0-DRAFT-RESUME` instead (same option semantics, draft-focused
+    question):
+
+    > **Gate `GATE-0-DRAFT-RESUME`** — required.
+    >
+    > 1. Call `AskUserQuestion` with the question and options below.
+    > 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+    >    `{ gateId: 'GATE-0-DRAFT-RESUME', questionHash, selectedOption,
+stepNumber: '0' }`.
+    > 3. Do not proceed past this point without a successful receipt write.
+
+**Gate `GATE-0-DRAFT-RESUME`** — call `AskUserQuestion`:
+- Q: A draft rollout '<name>' from a previous run is open. Continue, cancel it, or withdraw?
+- Options:
+  - Continue (Recommended)
+  - Cancel draft rollout
+  - Withdraw my participation
+  - _Offer "Withdraw my participation" ONLY when state.participantId is present AND get_rollout_status shows more than one participant — the server never removes the last participant. Substitute <name> with the rollout name from get_rollout_status._
+
+  Then act on the selected option (identical handling for both gates;
+  "Continue" and "Resume the draft rollout" are the same action):
+  - **Resume the draft rollout / Continue** → branch on `state.role`:
+    - `role === 'joiner'` → resume at **Step 1** (feature surface): a
+      joiner inherited the rollout's flags/providers/plan at join time
+      and still needs to walk THIS repo's wrap points and metrics.
+    - `role === 'creator'` (or absent — legacy lockfiles without `role`
+      were only ever written on the CREATE path) → resume at **Step 3**
+      (rollout style): the draft register at Step 2.5 already captured
+      metadata; Steps 3–9 fill in the spec and finalize.
+  - **Cancel draft rollout** → this is a **Configuration step** — call
+    `cancel_rollout` via `guarded_call` (`mcp__fireweave-api__`,
+    `cancel_rollout`, args `{ id: <rolloutId>,
+    reason: 'draft cancelled by user from resume guard' }`,
+    `isConfigurationStep: true, expectedResponseSchema:
+    'CancelRolloutResult' }`). On `{ ok: true }`, call
+    `mcp__rollout-server__clear_lockfile`; the skill ends here.
+  - **Withdraw my participation** → this is a **Configuration step** —
+    call `withdraw_participant` via `guarded_call`
+    (`mcp__fireweave-api__`, `withdraw_participant`, args
+    `{ id: <rolloutId>, participantId: <state.participantId> }`,
+    `isConfigurationStep: true, expectedResponseSchema:
+    'WithdrawParticipantResult' }`). The server removes this repo's
+    participant while the rollout is `drafting`/`wrapping` (never the
+    last one). On `{ ok: true }`, call
+    `mcp__rollout-server__clear_lockfile`; the skill ends here.
+- `lastStep === 'finalize' && state.rolloutId` — run
+  `Bash: fw api GET /v1/rollouts/<rolloutId>` (get_rollout_status):
+  - If `state === 'wrapping'` (or further along) — finalize completed,
+    but the crash may have hit BEFORE the post-finalize work. Do not
+    skip straight to Step 10; finish Step 9's tail first:
+    1. Check whether the baseline tag already exists:
+       `Bash: git tag -l fw-rollout/<rolloutId>`. If empty, run the
+       `tag_baseline_commit` Configuration step exactly as documented
+       at the end of Step 9 (via `guarded_call`). If the tag exists,
+       the baseline is already tagged — skip.
+    2. Present Sub-step 9.1's `GATE-9-COMMIT-AND-PR` offer (skip it
+       only if its receipt is already present in
+       `state.userConfirmations`).
+    3. Then continue to **Step 10** (final summary).
+  - Otherwise (still `drafting`) — the crash happened mid-Step-9; re-run
+    Step 9's three Configuration calls in order
+    (`update_participant_sha` → `update_rollout_spec` →
+    `finalize_rollout`). This is safe: `update_participant_sha` is
+    idempotent, `update_rollout_spec` is CAS-guarded by
+    `expectedSpecVersion`, and `finalize_rollout` re-validates before
+    transitioning.
+- `lastStep === 'register' && state.rolloutId` — LEGACY: written by
+  pre-draft-first skill versions (single-shot register). Jump to the
+  **post-register status path**: run
+  `Bash: fw api GET /v1/rollouts/<rolloutId>` with the recorded
+  `rolloutId`, render the current state, and offer the appropriate
   action buttons (Cancel for non-terminal, ack-alerts always available).
+
+### If no lockfile exists (scoped-file recovery)
+
+A missing lockfile does not always mean "no work in progress" — the
+gitignored cache may have been wiped (fresh clone, `git clean`). Before
+restarting cold, check the committed scoped files:
+
+1. List `.fireweave/rollouts/*.json`. If none exist, proceed to Step 0.1
+   normally.
+2. For each file whose `rolloutId` is non-null, read `projectId` from
+   `.fireweave/project.json` and run
+   `Bash: fw api GET /v1/projects/<projectId>/rollouts`. If that
+   rollout appears with an open state (`drafting` or `wrapping`):
+3. Recover the `participantId`: run
+   `Bash: fw api GET /v1/rollouts/<rolloutId>` (get_rollout_status) and
+   match `participants[]` on this repo (`git remote get-url origin`
+   parsed to `org/repo`) + branch (`git symbolic-ref --short HEAD`).
+4. Recover the `role`: `'creator'` when this repo matches the rollout's
+   `primaryRepo`, otherwise `'joiner'`.
+5. Write the lockfile
+   `{ lastStep: 'created', rolloutId, participantId, role,
+   diffApplied: false }` and resume exactly as the
+   `lastStep === 'created'` branch above — with `diffApplied: false`
+   that branch presents `GATE-0-DRAFT-RESUME` (no diffs question).
+
+If no participant matches this repo+branch, treat the open rollout as
+someone else's and proceed to Step 0.1 normally (the join path at
+Step 0.2 will offer it).
 
 ### Force-push detection
 
@@ -120,9 +256,13 @@ before resuming:
 1. Run `Bash: fw api GET /v1/rollouts/<rolloutId>` and parse the JSON.
 2. Find the participant for THIS repo by matching `participant.repo` against
    `git remote get-url origin` (parsed to `org/repo`).
-3. If a matching participant is found, compare `participant.commitSha`
-   against the current `git rev-parse HEAD`.
-4. If they DIFFER (rebase / amend / force-push since register-time):
+3. If the matching participant's recorded `commitSha` is `null` — a draft
+   participant whose SHA has not been captured yet (that happens at
+   Step 9) — **SKIP force-push detection entirely** and continue with the
+   resume flow: there is nothing to compare.
+4. Otherwise compare `participant.commitSha` against the current
+   `git rev-parse HEAD`.
+5. If they DIFFER (rebase / amend / force-push since register-time):
 
    > **Gate `GATE-0-FORCE-PUSH-DECISION`** — required.
    >
@@ -142,15 +282,32 @@ stepNumber: '0' }`.
      1. Resolve the underlying tool name and server prefix
         (`mcp__fireweave-api__`, `update_participant_sha`).
      2. Call `mcp__rollout-server__guarded_call` with
-        `{ serverPrefix, toolName, args, isConfigurationStep: true,
-        expectedResponseSchema: 'UpdateParticipantShaResult' }`.
+        `{ serverPrefix, toolName, args: { id: <rolloutId>, participantId,
+        repo, branch, newSha: <git rev-parse HEAD> },
+        isConfigurationStep: true,
+        expectedResponseSchema: 'UpdateParticipantShaResult' }` (`id` +
+        `participantId` fill the route path; `{ repo, branch, newSha }`
+        is the body).
      3. If the response shape is `{ error: { code, ... } }`, print the
         `remediation` field verbatim and stop. Do not retry, do not call the
         underlying tool directly, do not call another tool.
      4. If the response shape is `{ ok: true, result }`, use `result` as if it
         were the underlying tool's return value.
-   - **No, abort and start fresh** → call `mcp__rollout-server__clear_lockfile`;
-     user can re-register from Step 0.1.
+   - **No, abort and start fresh** → clearing the local lockfile does NOT
+     remove the server-side rollout, so first reconcile the live row
+     (state was read in step 1 above):
+     - If `state === 'drafting'` — this is a **Configuration step** —
+       call `cancel_rollout` via `guarded_call` (`mcp__fireweave-api__`,
+       `cancel_rollout`, args `{ id: <rolloutId>,
+       reason: 'draft abandoned after force-push divergence' }`,
+       `isConfigurationStep: true, expectedResponseSchema:
+       'CancelRolloutResult' }`) so no orphaned draft is left open.
+     - Otherwise — tell the user verbatim: _"The rollout `<rolloutId>`
+       remains open server-side (state `<state>`). Cancel it from the
+       Rollouts tab, or re-run `/fireweave:safe-rollout` and choose
+       Cancel."_
+     Then call `mcp__rollout-server__clear_lockfile`; the user can start
+     fresh from Step 0.1.
 
 ### Pre-seal spec-delta on re-run
 
@@ -163,8 +320,13 @@ the `drafting` and `wrapping` states — once the rollout is `sealed`,
 only option presented is "Start a new rollout" (covered below).
 
 1. Run `Bash: fw api GET /v1/rollouts/<rolloutId>` and read
-   `rollout.state`, `rollout.specVersion`, and the registered spec.
-2. If `state ∈ { drafting, wrapping }`, we diff the current worktree against
+   `rollout.state`, `rollout.specVersion` (the CAS counter, exposed on the
+   `rollout` object of the response), and the registered spec.
+2. If `state === 'drafting'`, **SKIP the spec-delta check entirely** and
+   continue from Step 0.1 — the server-side spec is intentionally empty
+   until Step 9 syncs it (`update_rollout_spec` runs there), so diffing
+   the worktree against it would falsely report every wrap-point as new.
+3. If `state === 'wrapping'`, we diff the current worktree against
    the registered spec (wrap-points added, removed, threshold or cohort-key
    changes). If the diff is non-empty, render a delta panel showing each
    change.
@@ -190,7 +352,7 @@ stepNumber: '0' }`.
      1. Resolve the underlying tool name and server prefix
         (`mcp__fireweave-api__`, `update_rollout_spec`).
      2. Call `mcp__rollout-server__guarded_call` with
-        `{ serverPrefix, toolName, args: { rolloutId, deltaJson,
+        `{ serverPrefix, toolName, args: { id: <rolloutId>, deltaJson,
         expectedSpecVersion: rollout.specVersion }, isConfigurationStep: true,
         expectedResponseSchema: 'UpdateRolloutSpecResult' }`.
      3. On `{ error: { code: 'conflict', ... } }`, print the `remediation` field
@@ -200,7 +362,7 @@ stepNumber: '0' }`.
    - **No, keep the registered spec** → ignore the local edits and continue from
      Step 0.1.
 
-3. If `state ∉ { drafting, wrapping }` — the rollout is sealed or further
+4. If `state ∉ { drafting, wrapping }` — the rollout is sealed or further
    along — the spec is frozen per CL6. Do NOT attempt `update_rollout_spec`.
    Instead:
 
@@ -216,11 +378,13 @@ stepNumber: '0' }`.
    - **Start a new rollout** → call `mcp__rollout-server__clear_lockfile`;
      restart the skill from Step 0.1 with a fresh lockfile.
 
-After the resume guard completes (or if no lockfile was found), proceed to
-Step 0.1 below. **At every step boundary from here on, write the lockfile
-via `mcp__rollout-server__write_lockfile` so the next interruption resumes
-from the right place.** After `register_rollout` succeeds at Step 9, call
-`mcp__rollout-server__clear_lockfile` to mark the work complete.
+After the resume guard completes (or if no lockfile was found and the
+scoped-file recovery found nothing to resume), proceed to Step 0.1 below.
+**At every step boundary from here on, write the lockfile via
+`mcp__rollout-server__write_lockfile` so the next interruption resumes
+from the right place.** After `finalize_rollout` succeeds at Step 9 and
+Step 10's summary is rendered, call `mcp__rollout-server__clear_lockfile`
+to mark the work complete.
 
 ## Step 0.1 — Preflight (deterministic, via `fw` CLI)
 
@@ -231,10 +395,10 @@ call `whoami`, list projects, or run a device flow. Those are now CLI
 responsibilities, not LLM judgment.
 
 Run `Bash: fw status --machine-readable` and parse the JSON. Bind the
-returned `org`, `project`, and `tokenExpiresAt` into your working
-memory. Cloud operations are reached through the `fw api` REST passthrough
-(`Bash: fw api <METHOD> <path>`) — reads call it directly, writes/config go
-through `guarded_call`. Three local rollout-server tools
+returned `org`, `project`, `tokenExpiresAt`, and `profileSource` into your
+working memory. Cloud operations are reached through the `fw api` REST
+passthrough (`Bash: fw api <METHOD> <path>`) — reads call it directly,
+writes/config go through `guarded_call`. Three local rollout-server tools
 (`extract_diff_surface`, `recommend_rollout_strategy`, `propose_metrics`)
 run entirely on this machine and are reached via
 `mcp__rollout-server__<name>` — they are stable local tools, not cloud
@@ -248,7 +412,46 @@ cleanly with:
 > "Fireweave preflight unexpectedly invalid. Please run `fw doctor` and
 > try again."
 
-After capturing the resolved context, proceed to Step 0.1b.
+**Profile-binding check.** After parsing `fw status`, check whether this
+repo pins a profile using the `Read` tool:
+
+1. Read `.fireweave/local.json` via the `Read` tool (the file may be
+   absent — that is not an error).
+2. If the file is absent or has no `profile` key, read
+   `.fireweave/rollout.config.json` via the `Read` tool (legacy v1
+   binding; also not an error if absent).
+
+The pinned alias is `profile` from `local.json` when present; otherwise
+`profile` from `rollout.config.json`. This precedence also resolves any
+`<alias>` ambiguity in the message below.
+
+`global-default` and `sole` mean the CLI ignored the repo's binding files
+entirely — a current `fw` binary fail-closes in a bound repo, so either
+value here indicates a stale binary.
+
+If a binding exists AND `profileSource` ∈ {`global-default`, `sole`}:
+
+- If the resolved `profile` from `fw status` is **different** from the
+  pinned alias → abort with:
+
+  _"This project pins a profile but the CLI resolved '<alias>' via
+  <profileSource>. Upgrade fw (`fw self-update`) then re-run, or run
+  `fw init` to re-bind."_
+
+  (Substitute `<alias>` with the pinned alias from the binding file, and
+  `<profileSource>` with the literal string returned by `fw status`.)
+
+- If the resolved `profile` from `fw status` **equals** the pinned alias
+  → print a one-line warning:
+
+  _"fw resolved the right profile but via `<profileSource>` — your fw
+  binary predates project-pinned profiles; run `fw self-update` soon."_
+
+  and **continue**.
+
+If no binding file is found, or `profileSource` is any other value
+(`flag`, `local`, `repo`, `org-match`), the profile resolved correctly —
+continue to Step 0.1b.
 
 ## Step 0.1b — MCP manifest check
 
@@ -333,9 +536,45 @@ stepNumber: '0.2' }`.
 - Options:
   - Create a new rollout (Recommended)
   - _plus one entry per open rollout (showing name + state + primary_dev)_
-   On selecting an existing rollout (**join**): jump straight to Step 7 (codegen)
-   using the existing rollout's `flagKey` + `providers`. The skill becomes the
-   JOIN path, not the CREATE path.
+   On selecting an existing rollout (**join**), the skill becomes the JOIN
+   path, not the CREATE path:
+
+   1. This is a **Configuration step** — call `add_rollout_participant`
+      via `guarded_call`:
+      1. Resolve the underlying tool name and server prefix
+         (`mcp__fireweave-api__`, `add_rollout_participant`).
+      2. Call `mcp__rollout-server__guarded_call` with
+         `{ serverPrefix, toolName, args: { id: <selected rolloutId>,
+         repo: <git remote get-url origin parsed to org/repo>,
+         branch: <git symbolic-ref --short HEAD>, commitSha: null },
+         isConfigurationStep: true, expectedResponseSchema:
+         'AddRolloutParticipantResult' }`. A `null` `commitSha` joins as a
+         draft participant — the real SHA is captured at Step 9.
+      3. If the response shape is `{ error: { code, ... } }`, print the
+         `remediation` field verbatim and stop. Do not retry, do not call
+         the underlying tool directly, do not call another tool.
+      4. If the response shape is `{ ok: true, result }`, capture
+         `result.participantId`.
+   2. Call `mcp__rollout-server__write_lockfile` with
+      `{ lastStep: 'created', rolloutId, participantId, role: 'joiner',
+      diffApplied: false }` — `role: 'joiner'` makes a later resume
+      re-enter at Step 1, not Step 3.
+   3. Seed the local rollout file: run
+      `Bash: fw api GET /v1/rollouts/<rolloutId>` (get_rollout_status),
+      compose this repo's rollout entry from the server spec — inherit
+      the rollout's `flags`, `providers`, and rollout plan
+      (style/schedule/guardrails) verbatim — then call
+      `write_preferences` via `guarded_call` with
+      `{ rolloutId, file: <composed entry> }` (plus
+      `header: { orgId, projectId, projectName }` only if
+      `.fireweave/project.json` does not exist yet).
+   4. **Continue at Step 1** (feature surface). The joiner walks the same
+      steps to add THIS repo's wrap points and metrics, scoped to the
+      same `rolloutId` — but a joiner **MUST NOT change the rollout's
+      flag keys or providers**; those are inherited from the rollout
+      being joined. Skip Step 2.5 (the rollout already exists) and
+      Steps 2's metadata gates (name/type/description are the
+      creator's).
 
 2. **Multi-repo coordination (D6).** Run
    `Bash: fw api GET /v1/projects/<projectId>/repos` and parse the JSON. If
@@ -647,6 +886,95 @@ stepNumber: '2' }`.
    "One-line description of what's being rolled out — what reviewers
    should know."
 
+## Step 2.5 — Register draft rollout (CREATE path only)
+
+Joiners skip this step — their rollout already exists (Step 0.2). On the
+CREATE path, the rollout is registered NOW as a `drafting` draft — flags,
+wrap points, and metrics may all still be empty; they are synced into the
+spec at Step 9 and validated by `finalize_rollout`.
+
+**Race guard.** First RE-RUN
+`Bash: fw api GET /v1/projects/<projectId>/rollouts` and parse the JSON.
+If a new open rollout (`state ∈ {drafting, wrapping}`) appeared since
+Step 0.2 ran (a teammate registered one in the meantime), do NOT create —
+re-present **`GATE-0.2-JOIN-OR-CREATE`** with the fresh list (same gate
+recipe as Step 0.2 sub-step 1) and honour the user's choice: joining
+follows the Step 0.2 join path; "Create a new rollout" continues below.
+
+> **Gate `GATE-2.5-REGISTER-DRAFT`** — required.
+>
+> 1. Call `AskUserQuestion` with the question and options below.
+> 2. Call `mcp__rollout-server__write_confirmation_receipt` with
+>    `{ gateId: 'GATE-2.5-REGISTER-DRAFT', questionHash, selectedOption,
+stepNumber: '2.5' }`.
+> 3. Do not proceed past this point without a successful receipt write.
+
+**Gate `GATE-2.5-REGISTER-DRAFT`** — call `AskUserQuestion`:
+- Q: Create rollout '<name>' in <environment> now? It starts in 'drafting' and can be cancelled.
+- Options:
+  - Yes, create draft (Recommended)
+  - No — exit
+Then act on the selected option:
+
+- **No — exit** → exit cleanly; nothing was created server-side.
+- **Yes, create draft** → this is a **Configuration step** — call
+  `register_rollout` via `guarded_call`:
+
+  1. Resolve the underlying tool name and server prefix
+     (`mcp__fireweave-api__`, `register_rollout`).
+  2. Call `mcp__rollout-server__guarded_call` with
+     `{ serverPrefix, toolName, args, isConfigurationStep: true,
+     expectedResponseSchema: 'RegisterRolloutResult' }`, where `args` is
+     the flat draft shape (mirrors fw-server's `POST /v1/rollouts` body,
+     single source of truth in `@fireweaveai/contracts`):
+
+     ```jsonc
+     {
+       "projectId": "<from `fw status`>",
+       "name": "<Step 2>",
+       "description": "<Step 2>",
+       "type": "<Step 2 featureType>",
+       "environment": "<Step 0.2>",
+       "primaryRepo": "<git remote get-url origin parsed to org/repo>",
+       "firstParticipant": {
+         "repo": "<same org/repo>",
+         "branch": "<git symbolic-ref --short HEAD>",
+         "commitSha": null
+       }
+     }
+     ```
+
+     `commitSha: null` is what makes this a DRAFT register — the server
+     creates the rollout in state `drafting` and defers the workflow
+     side-effects to `finalize_rollout`. `joinedByUserId` is injected
+     server-side — do **NOT** send it. Flags and spec are intentionally
+     absent here; they sync at Step 9 via `update_rollout_spec`.
+  3. If the response shape is `{ error: { code, ... } }`, print the
+     `remediation` field verbatim and stop. Do not retry, do not call the
+     underlying tool directly, do not call another tool.
+  4. If the response shape is `{ ok: true, result }`, expect
+     `{ rolloutId, participantId, state: 'drafting' }` — bind all three.
+
+After a successful draft register:
+
+1. Call `mcp__rollout-server__write_lockfile` with
+   `{ lastStep: 'created', rolloutId, participantId, role: 'creator',
+   diffApplied: false }` — `role: 'creator'` makes a later resume
+   re-enter at Step 3.
+2. Write the skeleton rollout entry — this is a **Configuration step** —
+   call `write_preferences` via `guarded_call` with
+   `{ rolloutId, file: <skeleton entry>, header: { orgId, projectId,
+   projectName } }` (the `header` creates `.fireweave/project.json` when
+   it does not exist yet; when it exists the CLI owns it and the header
+   is ignored). The skeleton entry carries: the Step 2 feature metadata,
+   `flags: []`, `wrapPoints: []`, `metrics: []`, the canonical
+   verification-policies block, and the `providers` map resolved at
+   Step 0.2.
+
+Continue to Step 3. From here on, every decision (rollout style, wrap
+points, metrics) materialises into this rollout's entry
+(`.fireweave/rollouts/<rolloutId>.json`) at Step 7.
+
 ## Step 3 — Rollout style (scenario-aware)
 
 Run `Bash: fw api GET /v1/projects/<projectId>/rollouts/recommendation-data`
@@ -680,6 +1008,10 @@ stepNumber: '3' }`.
 - Options:
 
   - _recommended one first, tagged with reason (e.g. "<recommended> (Recommended for this scenario: <reason from tool>)"), then the next-best alternatives, plus "Other / custom-schedule"_
+
+The confirmed plan (style + schedule + guardrails) materialises into the
+rollout's entry — the `rollout` block of
+`.fireweave/rollouts/<rolloutId>.json` — when Step 7 writes it.
 
 ## Step 4 — Capability resolution
 
@@ -794,8 +1126,8 @@ wrap-points in the same proposed group resolve different
 either picks one expression for the whole group or splits the
 mismatching wrap-points into separate groups.
 
-Materialise the user's choice into the working spec passed to
-`register_rollout`: write the chosen `coherenceGroups[]` array (one
+Materialise the user's choice into the rollout's entry (and the final
+spec synced at Step 9): write the chosen `coherenceGroups[]` array (one
 entry per group, with an id and the group's resolved cohort-key
 expression) and set `flags[].coherenceGroupId` on every grouped flag.
 For "Each flag is independent", leave `coherenceGroups: []` and omit
@@ -819,7 +1151,8 @@ primary `flagKey` (substitute `<flag>` with the flag's key):
    observe p95 latency change for the new code path.
 
 These three metrics are pre-selected by default. The user may opt
-out of any one OR add custom metrics via the gate below.
+out of any one OR add custom metrics via the gate below. The accepted
+set materialises into the rollout's entry (`metrics[]`) at Step 7.
 
 > **Gate `GATE-6-ACCEPT-METRIC`** — required (multi-select across the
 > canonical three).
@@ -898,9 +1231,12 @@ disk; otherwise still emit it.
 ## Step 7 — Codegen
 
 Before applying any diffs, call `mcp__rollout-server__write_lockfile` with
-`{ lastStep: 'codegen', diffApplied: false, workingSpec: <partial spec
-captured so far> }`. This way an interrupt before the first `Edit`
-restarts at Step 5 cleanly.
+`{ lastStep: 'codegen', rolloutId, participantId, role,
+diffApplied: false, workingSpec: <partial spec captured so far> }`. This
+way an interrupt before the first `Edit` restarts at Step 5 cleanly.
+**`write_lockfile` REPLACES the lockfile state** — always carry
+`rolloutId`, `participantId`, and `role` forward on every write or the
+draft linkage (and the Step 0 draft-aware resume branches) is lost.
 
 **Multi-flag rollouts**: every wrap point now binds to ONE flag via its
 `flagKey` field. Group wrap points by `flagKey` before composing the
@@ -913,7 +1249,8 @@ For each confirmed wrap point (grouped by its `flagKey`):
 
 1. Read the target file content locally via the `Read` tool at
    `wrapPoint.file`.
-2. Resolve the flag: `flag = config.flags.find(f => f.key === wp.flagKey)`.
+2. Resolve the flag from the rollout entry's flags:
+   `flag = entry.flags.find(f => f.key === wp.flagKey)`.
 3. Locate `wrapPoint.symbol` inside the file content. Apply the wrap
    pattern per `wrapPoint.wrapStyle` — use **your own `Edit` tool** to
    produce the diff:
@@ -949,9 +1286,10 @@ stepNumber: '7' }`.
   - Skip this wrap-point
 
 Once **the first** diff has been applied, immediately call
-`mcp__rollout-server__write_lockfile` again with `diffApplied: true`. From
-this point on the working tree is dirty — an interrupt resumes via the
-"Confirm or revert?" prompt in Step 0.
+`mcp__rollout-server__write_lockfile` again with the same shape
+(`rolloutId`, `participantId`, `role`, `workingSpec` carried forward)
+and `diffApplied: true`. From this point on the working tree is dirty —
+an interrupt resumes via the "Confirm or revert?" prompt in Step 0.
 
 After all diffs are applied, this is a **Configuration step** — call
 `write_preferences` via `guarded_call`:
@@ -959,24 +1297,36 @@ After all diffs are applied, this is a **Configuration step** — call
 1. Resolve the underlying tool name and server prefix
    (`mcp__rollout-server__`, `write_preferences`).
 2. Call `mcp__rollout-server__guarded_call` with
-   `{ serverPrefix, toolName, args: { config: <assembled RolloutConfig> },
-isConfigurationStep: true, expectedResponseSchema:
-'WritePreferencesResult' }`.
+   `{ serverPrefix, toolName, args: { rolloutId, file: <assembled rollout
+entry> }, isConfigurationStep: true, expectedResponseSchema:
+'WritePreferencesResult' }`. The `file` is the full rollout entry for
+   THIS rollout — feature metadata, `flags[]`, `wrapPoints[]`,
+   `metrics[]`, the `rollout` plan block, `providers`, and the
+   verification-policies block — upserted into
+   `.fireweave/rollouts/<rolloutId>.json`.
 3. If the response shape is `{ error: { code, ... } }`, print the
    `remediation` field verbatim and stop. Do not retry, do not call the
    underlying tool directly, do not call another tool.
-4. If the response shape is `{ ok: true, result }`, the preferences file
+4. If the response shape is `{ ok: true, result }`, the rollout file
    has been validated and atomically written.
 
-**The skill never writes `.fireweave/rollout.config.json` directly — always
-go through `write_preferences` via `guarded_call`** so the schema is
-validated and the file is written atomically.
+**The skill never writes `.fireweave/rollouts/<rolloutId>.json` or
+`.fireweave/project.json` directly — always go through
+`write_preferences` via `guarded_call`** so the schema is validated and
+the files are written atomically. (`write_preferences` also auto-migrates
+a LEGACY single-file `.fireweave/rollout.config.json` into the split-file
+model on first scoped write.)
 
 ## Step 8 — Verification
 
-Run all seven `mcp__rollout-server__verify_*` tools, in order. Each returns
-`{ pass, findings: [...] }`. These are LOCAL tools because they inspect the
-dev's working tree.
+Run all seven `mcp__rollout-server__verify_*` tools, in order, each with
+`{ rolloutId }` (plus `cwd` only if the repo root differs from the MCP
+server's working directory). Each returns `{ pass, findings: [...] }`.
+These are LOCAL tools because they inspect the dev's working tree — and
+they read the wrap points / flags / metrics from the committed scoped
+file `.fireweave/rollouts/<rolloutId>.json`, so **Step 7's
+`write_preferences` MUST have run before Step 8** or the verifiers have
+nothing to check against.
 
 If any check returns `pass: false` and the rule's policy is `block`:
 
@@ -1031,22 +1381,30 @@ stepNumber: '8.5' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
 **Gate `GATE-8.5-REGISTER-OR-EDIT`** — call `AskUserQuestion`:
-- Q: Register this rollout?
+- Q: Finalize this rollout?
 - Options:
-  - Yes, register and capture commit (Recommended)
+  - Yes, finalize and capture commit (Recommended)
   - Edit specific section…
   - Cancel
+(The rollout was already registered as a draft at Step 2.5 — this gate
+confirms finalization, not registration. The gate ID keeps its historic
+name for receipt continuity.)
 On **Edit specific section…** → jump back to the relevant step (4, 6, or 7);
 re-render the summary on return.
 
 Call `mcp__rollout-server__write_lockfile` with `{ lastStep: 'summary',
-diffApplied: true, workingSpec: <full spec> }` so an interrupt here
-resumes at this same panel.
+rolloutId, participantId, role, diffApplied: true,
+workingSpec: <full spec> }` (the draft linkage fields carried forward —
+the write replaces state) so an interrupt here resumes at this same
+panel.
 
-## Step 9 — SHA capture + Registration (D7)
+## Step 9 — SHA capture + Finalize (D7)
 
-The deploy gate needs a real commit SHA to track. Before calling
-`register_rollout`, prompt the user to commit + push:
+The rollout has existed server-side in state `drafting` since Step 2.5
+(or since the join at Step 0.2). This step captures the real commit SHA
+the deploy gate will track, syncs the final spec, and finalizes the
+draft into `wrapping`. Before anything else, prompt the user to
+commit + push:
 
 > **Gate `GATE-9-SHA-READY`** — required.
 >
@@ -1057,7 +1415,7 @@ stepNumber: '9' }`.
 > 3. Do not proceed past this point without a successful receipt write.
 
 **Gate `GATE-9-SHA-READY`** — call `AskUserQuestion`:
-- Q: Ready to register? I'll need a commit SHA. Have you committed and pushed?
+- Q: Ready to finalize? I'll need a commit SHA. Have you committed and pushed?
 - Options:
   - Yes, on branch <auto-detected>
   - Not yet — exit so I can commit/push
@@ -1067,74 +1425,83 @@ Then act on the selected option:
   `origin/<branch>` (`git branch -r --contains <sha>` includes `origin/<branch>`).
 - **Not yet — exit so I can commit/push** → exit cleanly; print resume command.
 
-Once the SHA is captured, this is a **Configuration step** — call
-`register_rollout` via `guarded_call`. The wire shape is **flat** (it mirrors
-fw-server's `POST /v1/rollouts` body, the single source of truth in
-`@fireweaveai/contracts`):
+Once the SHA is captured, **first** call
+`mcp__rollout-server__write_lockfile` with `{ lastStep: 'finalize',
+rolloutId, participantId, role, diffApplied: true }` — BEFORE the first
+cloud call below, so a crash anywhere in this sequence resumes via the
+`lastStep === 'finalize'` branch of Step 0 (which safely re-runs all
+three calls).
+
+Then run **three Configuration steps, in this order**, each via
+`guarded_call`:
+
+**(1) `update_participant_sha`** — record the real SHA on this repo's
+participant (draft participants carry `commitSha: null` until now):
 
 1. Resolve the underlying tool name and server prefix
-   (`mcp__fireweave-api__`, `register_rollout`).
+   (`mcp__fireweave-api__`, `update_participant_sha`).
 2. Call `mcp__rollout-server__guarded_call` with
-   `{ serverPrefix, toolName, args, isConfigurationStep: true,
-expectedResponseSchema: 'RegisterRolloutResult' }`, where `args` is the flat
-   shape:
+   `{ serverPrefix, toolName, args: { id: <rolloutId>,
+   participantId: <from the lockfile>, repo: <org/repo>,
+   branch: <git symbolic-ref --short HEAD>,
+   newSha: <git rev-parse HEAD> }, isConfigurationStep: true,
+   expectedResponseSchema: 'UpdateParticipantShaResult' }`.
 
-   ```jsonc
-   {
-     "projectId": "<from `fw status`>",
-     "name": "<Step 2>",
-     "description": "<Step 2>",
-     "type": "<Step 2 featureType>",
-     "environment": "<Step 0.2 / Step 2>",
-     "primaryRepo": "<optional>",
-     "providers": { /* optional: capabilityId → providerId */ },
-     "planJson": { /* optional: the Step 3 plan (style + schedule) */ },
-     "spec": {
-       "metrics": [ /* from Step 3.2 / GATE metrics confirmation */ ],
-       "rollout": { "guardrails": [ /* from Step 3 plan */ ] },
-       "wrapPoints": [ /* from Step 6 wrap diff */ ]
-     },
-     "flags": [
-       {
-         "flagKey": "...",
-         "flagProviderId": "...",
-         "flagType": "boolean | multivariate",
-         "safeDefault": false,
-         "isPrimary": true
-       }
-       /* …one entry per flag (optional) */
-     ],
-     "firstParticipant": {
-       "repo": "...",
-       "branch": "...",
-       "commitSha": "<git rev-parse HEAD>",
-       "prNumber": null
-     }
-   }
-   ```
-
-   `joinedByUserId` is injected server-side — do **NOT** send it. `name`,
-   `description`, `type`, and `environment` are top-level (no `metadata`
-   wrapper). The participant is `firstParticipant` (renamed from
-   `participant`). `primaryRepo`, `providers`, `planJson`, `spec`, and `flags`
-   are optional. When omitted, `register_rollout` auto-merges them from
-   `.fireweave/rollout.config.json` (written in Step 7 via `write_preferences`)
-   before POSTing to fw-server — including `spec.metrics`,
-   `spec.rollout.guardrails`, `spec.wrapPoints`, and `planJson.schedule`.
-   You MAY still send them explicitly; explicit `spec` with any metrics,
-   guardrails, or wrap points is never overwritten.
+   The wire shape is flat: `id` and `participantId` fill the route path
+   (`PATCH /v1/rollouts/{id}/participants/{participantId}`); the
+   remaining `{ repo, branch, newSha }` is the request body, which the
+   server uses to resolve the same participant. The call works in
+   `drafting` and from a null SHA, and is idempotent — if `newSha`
+   already matches it returns `updated: false`. Success shape:
+   `{ participantId, oldSha, newSha, updated }`.
 3. If the response shape is `{ error: { code, ... } }`, print the
    `remediation` field verbatim and stop. Do not retry, do not call the
    underlying tool directly, do not call another tool.
-4. If the response shape is `{ ok: true, result }`, use
-   `result.rolloutId` and `result.state` going forward.
 
-On success the server creates the rollout, inserts the first participant,
-transitions the workflow to state `wrapping`, and returns
-`{ rolloutId, state: 'wrapping' }`.
+**(2) `update_rollout_spec`** — sync the final spec assembled from the
+rollout's entry (`.fireweave/rollouts/<rolloutId>.json`):
 
-Immediately call `mcp__rollout-server__write_lockfile` with `{ lastStep:
-'register', rolloutId, workingSpec: <full spec>, diffApplied: true }`.
+1. Run `Bash: fw api GET /v1/rollouts/<rolloutId>` (get_rollout_status)
+   and read the current CAS counter from `rollout.specVersion` in the
+   response.
+2. Resolve the underlying tool name and server prefix
+   (`mcp__fireweave-api__`, `update_rollout_spec`).
+3. Call `mcp__rollout-server__guarded_call` with
+   `{ serverPrefix, toolName, args: { id: <rolloutId>,
+   deltaJson: <final spec — flags, wrapPoints, metrics, guardrails,
+   coherence groups — from the rollout's entry>,
+   expectedSpecVersion: <rollout.specVersion from step 1> },
+   isConfigurationStep: true,
+   expectedResponseSchema: 'UpdateRolloutSpecResult' }`.
+4. **ONE-RETRY conflict rule.** On a version-conflict error envelope
+   (the CAS guard — HTTP 409 / `code: 'conflict'`): re-fetch via
+   `get_rollout_status`, re-apply the local delta on top of the fresh
+   spec, and retry ONCE with the new `expectedSpecVersion`. If the
+   retry conflicts again, stop and print the `remediation` field
+   verbatim. This is an **explicit exception to the "never retry"
+   `guarded_call` doctrine, scoped to THIS call only** — the CAS
+   version makes one re-read-and-retry provably safe; no other
+   guarded_call may ever be retried.
+5. On any other error envelope, print the `remediation` field verbatim
+   and stop. On `{ ok: true, result: { specVersion } }`, continue.
+
+**(3) `finalize_rollout`** — transition the draft to `wrapping`:
+
+1. Resolve the underlying tool name and server prefix
+   (`mcp__fireweave-api__`, `finalize_rollout`).
+2. Call `mcp__rollout-server__guarded_call` with
+   `{ serverPrefix, toolName, args: { id: <rolloutId> },
+   isConfigurationStep: true,
+   expectedResponseSchema: 'FinalizeRolloutResult' }`. The server
+   validates completeness (≥1 flag, ≥1 spec wrap point, the caller's
+   participant SHA non-null), transitions `drafting → wrapping`, and
+   fires the deferred enter-wrapping side effects (the
+   safe-rollout-playbook workflow + participant-registered signal).
+3. If the response shape is `{ error: { code, ... } }`, print the
+   `remediation` field verbatim and stop. Do not retry, do not call the
+   underlying tool directly, do not call another tool.
+4. If the response shape is `{ ok: true, result }`, expect
+   `{ rolloutId, state: 'wrapping' }`.
 
 This is a **Configuration step** — call `tag_baseline_commit` via
 `guarded_call`:
@@ -1142,9 +1509,11 @@ This is a **Configuration step** — call `tag_baseline_commit` via
 1. Resolve the underlying tool name and server prefix
    (`mcp__rollout-server__`, `tag_baseline_commit`).
 2. Call `mcp__rollout-server__guarded_call` with
-   `{ serverPrefix, toolName, args: { rolloutId, commitSha },
+   `{ serverPrefix, toolName, args: { rolloutId },
 isConfigurationStep: true, expectedResponseSchema:
-'TagBaselineCommitResult' }`.
+'TagBaselineCommitResult' }` (the tool reads HEAD itself; pass
+   `repoRoot` only if the repo root differs from the MCP server's
+   working directory — there is no `commitSha` argument).
 3. If the response shape is `{ error: { code, ... } }`, print the
    `remediation` field verbatim and stop. Do not retry, do not call the
    underlying tool directly, do not call another tool.
@@ -1154,12 +1523,13 @@ isConfigurationStep: true, expectedResponseSchema:
 
 After Step 10 completes successfully, call
 `mcp__rollout-server__clear_lockfile` — the work is checkpointed in the
-committed `rollout.config.json` and the server-side rollout row, so the
-local resume cache is no longer needed.
+committed `.fireweave/project.json` + `.fireweave/rollouts/<rolloutId>.json`
+and the server-side rollout row, so the local resume cache is no longer
+needed.
 
 ### Sub-step 9.1 — `GATE-9-COMMIT-AND-PR` (opt-in commit + PR creation)
 
-After `register_rollout` returns and `tag_baseline_commit` has been
+After `finalize_rollout` returns and `tag_baseline_commit` has been
 written, the skill MAY optionally commit the wrap diff and open a PR
 on the user's behalf. This sub-step is **opt-in** — the default
 selection is "Skip" so existing flows keep working unchanged.
@@ -1205,12 +1575,15 @@ create --fill --web=false` fails for any reason, print the
    (`https://github.com/<owner>/<repo>/compare/<branch>?expand=1`).
 7. On `gh pr create` success, parse the returned PR URL from stdout
    and record it via `guarded_call` with `{ serverPrefix:
-   'mcp__fireweave-api__', toolName: 'record_pr_url', args: { rolloutId,
-   prUrl }, isConfigurationStep: true }`. The server persists `prUrl` on the
-   rollout row via the `record_pr_url` use-case.
+   'mcp__fireweave-api__', toolName: 'record_pr_url', args: { id:
+   <rolloutId>, prUrl }, isConfigurationStep: true,
+   expectedResponseSchema: 'RecordPrUrlResult' }` (`id` fills the
+   route path `PATCH /v1/rollouts/{id}/pr-url`; `{ prUrl }` is the
+   body). The server persists `prUrl` on the rollout row via the
+   `record_pr_url` use-case.
 
 The commit + PR step is purely additive — failing it never breaks
-the rollout. The rollout is already registered + tagged at this
+the rollout. The rollout is already finalized + tagged at this
 point; the worst case is "user opens the PR by hand".
 
 ## Step 10 — Final summary
@@ -1236,8 +1609,11 @@ Print a markdown summary covering:
 - **Never** invoke the slash command `/fw-rollout` recursively.
 - **Never** call provider APIs directly — always go through the
   `rollout-server` MCP tools or the `fw api` passthrough.
-- **Never** write to `.fireweave/rollout.config.json` except via
-  `mcp__rollout-server__write_preferences`.
+- **Never** write to `.fireweave/project.json` or
+  `.fireweave/rollouts/<rolloutId>.json` except via
+  `mcp__rollout-server__write_preferences` (which also migrates the
+  LEGACY `.fireweave/rollout.config.json` when it finds one). Participants
+  are server-owned and NEVER appear in committed files.
 - **Never** mint, store, or send a Bearer token from inside the skill —
   authentication is owned by the `fw` CLI and the `fw-auth-gate.sh`
   hook. `fw api` attaches and refreshes the token itself; the skill
