@@ -736,10 +736,13 @@ stepNumber: '0.2' }`.
    fw-rollout commit, last release tag, last green CI sha, current
    main).
 
-6. **Rollout history defaults.** History/learnings enrichment is deferred —
-   there is no `fw api` route for it yet. Skip any cloud call here and use
-   conservative inline defaults to inform the smart defaults at Steps 3 and 6
-   (treat the project as having no prior-rollout signal).
+6. **Rollout history defaults.** When
+   `Bash: fw api GET /v1/projects/<projectId>/rollouts/recommendation-data`
+   returns a non-empty `stableFlags[]`, surface them before Step 1 as flags
+   from completed rollouts whose wrappers should be removed from code during
+   this run (they are deprecated — safe to delete the `flag.evaluate` branches
+   and provider keys). Do not auto-delete provider flags; the developer removes
+   code references and the verifier `verify_no_orphan_flags` catches drift.
 
 7. **Lockfile checkpoint.** Call `use_mcp_tool(server_name="rollout-server", tool_name="write_lockfile")`
    with the discovery-checkpoint shape below. The `lastConfigGap` field
@@ -932,7 +935,9 @@ points, metrics) materialises into this rollout's entry
 
 Run `Bash: fw api GET /v1/projects/<projectId>/rollouts/recommendation-data`
 and parse the JSON. This returns recent rollouts + outcomes for the project —
-raw data, not a pre-cooked recommendation.
+raw data, not a pre-cooked recommendation. It also returns `stableFlags[]`:
+flags from successfully completed rollouts whose code wrappers should be treated
+as deprecated and removed during this run.
 
 **Synthesise the recommendation INLINE** using your own reasoning. Consider:
 
