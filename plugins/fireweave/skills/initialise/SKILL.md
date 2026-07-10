@@ -21,10 +21,25 @@ instructions + Cursor rules/hooks) so every feature change keeps
 `fw-tracker` stamps aligned before `/fireweave:safe-rollout-fast`. It does NOT
 wrap existing code.
 
+**Environment-keyed, not dev/prod-binary (D26).** The harness selects its branch
+from the **running environment NAME** — the project's `defaultEnvironment` plus
+every environment declared in FireWeave (`list_project_environments`) — via a
+generated `FW_ENV_PROFILES` map, NOT a bare `NODE_ENV` boolean. Each environment
+is classified into a **tier** (`dev` → local provider + console; `prod` → connected
+vendor + OTLP + boot beacon). `staging` is a **first-class prod-tier** environment,
+never silently folded into dev or prod. `isProd()` remains only as the classifier
+for the tier and the token `verify_prod_path` greps for — it is no longer the
+switch. The default environment is the row that runs when nothing is set at runtime,
+and it determines which capability bindings the **dev** branch reflects; the **prod**
+branch is wired from the **prod-tier** environment's bindings (Step 3).
+
 V1 prod scope is **TS-server + web on PostHog**. For a surface with no vendor
 provider (Go/Rust/Flutter), it scaffolds dev-only console wiring and prints an
 explicit "prod deferred" notice — it never emits a half-wired prod branch that
-would false-green `mcp__rollout-server__verify_prod_path`.
+would false-green `mcp__rollout-server__verify_prod_path`. Likewise, a project with
+**no prod-tier environment** (dev-only) gets the dev branch scaffolded and prod
+secrets **deferred with an explicit notice** — Step 3 never forces a prod-run
+question when there is no prod-tier environment to attest.
 
 ## Step 0 — Auth precondition
 
@@ -39,16 +54,16 @@ and PARK. Then run the Step 0.1b tool-manifest check via
 |---|---|
 | **1 — Repo gate** | `AskUserQuestion`: *"Let FireWeave manage rollouts in this repo?"* **No → exit, touch nothing.** |
 | **2 — Detect agents + language + deploy targets** | Detect coding agents (`CLAUDE.md`/`.claude/`, `.cursor/`, `.clinerules/`, `AGENTS.md`, `.github/copilot-instructions.md`, `GEMINI.md`, `.windsurfrules`; default `AGENTS.md` + `CLAUDE.md`). Detect surface(s) → tier + harness profile. Detect deploy targets → the stamp-beacon tier. Record which agents are present (`cursor`, `claude`, `cline`, …) for Step 7–8. |
-| **3 — Provider/connection resolution (capability-driven, D-PROVISION)** | Query the project's bound capabilities + connections via `mcp__rollout-server__guarded_call` (→ `fw api`) and provision each FUNCTION from its backing vendor. **Flags:** if `feature-flags.flag.control` is not bound, hand off to the fw-webapp **OAuth connect** screen (browser-redirect, no CLI path) and PARK until bound. **Telemetry:** read each observability vendor's connection descriptor `{ vendor, otlpEndpoint, credentialEnvName }` and scaffold a **direct** app→vendor OTLP exporter — NEVER an `observability.ingest` proxy through FireWeave (the firehose stays out of FireWeave's data path). Always offer the FireWeave local dev provider. **Boot beacon (mandatory — BLOCKING):** call `mcp__rollout-server__provision_deploy_beacon_env` with `{ apiSurface: true, webSurface: true }` when both ts-server + web harnesses exist; `{ apiSurface: true }` for API-only; `{ webSurface: true, apiSurface: false }` for web-only. **On `{ ok: false }` or missing tool → PARK** (do not continue to Step 4). **After success, verify on disk:** `.fireweave/deploy-beacon.env.local` contains both `FW_ATTEST_URL` + `FW_PROJECT_API_KEY`, and `.fireweave/.gitignore` lists `deploy-beacon.env.local`. Record both paths in `installedInto[]`. Then `AskUserQuestion`: where will prod run (GitHub Actions secrets / VM env / docker-compose)? Show the tool's `cloudSecretDestinations` copy-paste block and PARK until the user confirms secrets are set. |
-| **4 — Scaffold harness (both branches, D26)** | Generate `fireweave/fw-harness.<ext>` with the `isProd()` conditional: dev → in-memory OpenFeature provider + OTel console exporter; prod → the connected vendor's real provider + direct OTLP. The harness imports `fw-tracker/index`, imports `resolveBootBeaconFromEnv` from `@fireweaveai/deploy-sdk/attest`, and calls `initFwAttestation({ stamps: FW_STAMPS, ...resolveBootBeaconFromEnv({ env: process.env, prod }) })` via PLAIN static imports (no glob/embed/build script). **TS-server `.mjs` harness:** patch the API package `build` script to copy compiled harness artifacts — see **API Docker build** below. |
+| **3 — Environment map + provider/connection resolution (capability-driven, D-PROVISION)** | **3a — Enumerate environments.** Via `mcp__rollout-server__guarded_call` → `list_project_environments` (fall back to `.fireweave/project.json`), read the full environment list and `defaultEnvironment`. Classify each environment into a **tier**: use the API's `tier`/`kind` field when present; otherwise treat `defaultEnvironment` as `dev` and confirm the **prod-tier set** with one `AskUserQuestion` (multi-select the environments that run real user traffic — e.g. `staging`, `production`). Build the env→tier **profile map** (this becomes the harness `FW_ENV_PROFILES` in Step 4) and persist it as `rolloutReady.environments` alongside `defaultEnvironment` in `.fireweave/project.json`. **3b — Resolve capabilities per tier (do NOT wire prod from the dev env).** For the **dev branch** the FireWeave local provider needs no vendor binding. For the **prod branch**, call `get_project_capabilities` with `{ projectId, environment: <prod-tier env> }` — the connected-vendor descriptor (`flag.control.posthogProjectId`, observability `{ vendor, otlpEndpoint, credentialEnvName }`) MUST come from the **prod-tier** environment, never the default/dev one. When multiple prod-tier environments exist, resolve each and record its `posthogProjectId` per environment (manifest `harness.posthogProjectId` = the promotion target env; `verify_prod_path` accepts `targetEnvironment`). Persist the resolved `posthogProjectId` into `.fireweave/project.json` / manifest `harness.posthogProjectId`. **Flags:** if a prod-tier env's `feature-flags.flag.control` is not bound, hand off to the fw-webapp **OAuth connect** screen (browser-redirect, no CLI path) and PARK until bound. **Telemetry:** scaffold a **direct** app→vendor OTLP exporter from the prod-tier descriptor — NEVER an `observability.ingest` proxy through FireWeave. Always offer the FireWeave local dev provider for the dev tier. **3c — Boot beacon (BLOCKING when a prod-tier env exists).** If the profile map has **no prod-tier environment** (dev-only project), SKIP beacon provisioning, print an explicit **"prod deferred — no prod-tier environment configured"** notice, and continue to Step 4. Otherwise call `mcp__rollout-server__provision_deploy_beacon_env` with `{ apiSurface: true, webSurface: true }` when both ts-server + web harnesses exist; `{ apiSurface: true }` for API-only; `{ webSurface: true, apiSurface: false }` for web-only. **On `{ ok: false }` or missing tool → PARK.** **After success, verify on disk:** `.fireweave/deploy-beacon.env.local` contains both `FW_ATTEST_URL` + `FW_PROJECT_API_KEY`, and `.fireweave/.gitignore` lists `deploy-beacon.env.local`. Record both paths in `installedInto[]`. Then `AskUserQuestion`: **for the prod-tier environment(s)**, where does each run? Offer ONLY the destinations the tool's `cloudSecretDestinations` returns for THIS repo's detected deploy targets (Step 2) — do not hardcode a fixed list. State plainly that the default environment (`<defaultEnvironment>`, dev-tier) needs NO beacon secrets; these vars are set only where the prod-tier env runs. Show the matching `cloudSecretDestinations` copy-paste block and PARK until the user confirms secrets are set. **The skill takes the user's confirmation on trust — there is no tool that reads back a remote secret store; the real gate is the deploy-time attestation failing if they are absent.** |
+| **4 — Scaffold harness (environment-keyed, both branches, D26)** | Generate `fireweave/fw-harness.<ext>` from the surface template. Emit the `FW_ENV_PROFILES` map + `FW_DEFAULT_ENV` from Step 3a's env→tier profile (do NOT ship the template's placeholder rows unchanged — regenerate them from the project's environments). The harness resolves the running environment NAME (`resolveFwEnvName`), looks up its tier, and selects: `dev` → in-memory OpenFeature provider + OTel console exporter; `prod` → the connected vendor's real provider + direct OTLP. `isProd()` is retained ONLY as the unknown-env tier fallback and the token `verify_prod_path` greps for. The harness imports `fw-tracker/index`, imports `resolveBootBeaconFromEnv` from `@fireweaveai/deploy-sdk/attest`, and calls `initFwAttestation({ stamps: FW_STAMPS, ...resolveBootBeaconFromEnv({ env: process.env, prod }) })` via PLAIN static imports (no glob/embed/build script). Because the beacon scopes off `FW_ENV`, document that **`FW_ENV` must be set per environment** (staging → `FW_ENV=staging`) so classification and attestation agree. **TS-server `.mjs` harness:** patch the API package `build` script to copy compiled harness artifacts — see **API Docker build** below. |
 | **5 — Scaffold `fw-tracker/` + `.fireweave/`** | Empty `fw-tracker/` const tree at the idiomatic path; `.fireweave/changelog/` + `_archive/`, `.fireweave/rollout-ready/` (manifests), `PROVIDERS.md`, `config.json`. Ensure `.fireweave/.gitignore` contains `deploy-beacon.env.local` (the provision tool writes this — re-check if missing). Also write `.fireweave/hooks/rollout-build-gate.mjs` (see **Build-gate script** below) and `.fireweave/hooks/rollout-build-gate.sh` wrapper. |
 | **6 — Wire the harness into the app entrypoint** | Inject `await initFwHarness()` as the FIRST awaited statement in the detected entrypoint, and record the location in `project.json.rolloutReady.harnessEntrypoint`. `mcp__rollout-server__verify_prod_path` asserts this. |
 | **7 — Standing instructions + agent links** | Write `.fireweave/agent-instructions.md` (see **Agent instructions template** below). Link it from every detected agent file (`AGENTS.md`, `CLAUDE.md`, …). **Do not** rely on a one-line link alone for Cursor — Step 7b is mandatory when `.cursor/` exists. |
 | **7b — Cursor dev loop (when `.cursor/` exists)** | Write `.cursor/rules/fireweave-rollout-ready.mdc` (always-on rule; see template). Merge `rollout-server` into `.cursor/mcp.json` (see **MCP merge**). Ensure the four FireWeave skills exist under `.cursor/skills/` (copy from plugin dist or platform source if missing). Record every path in `installedInto[]`. |
 | **8 — Hooks** | **Cursor** (when `.cursor/` exists): write `.cursor/hooks.json` + executable scripts under `.cursor/hooks/` (see **Cursor hooks**). **Claude Code** (when `.claude/` exists): optional `UserPromptSubmit` + `SessionStart` via `rollout-intent-gate.sh` in `.claude/hooks/` (same intent text as the Cursor rule). |
-| **9 — Record + verify** | Write `project.json.rolloutReady` (`initialized`, `language`, `strategy`, `sourceRoot`, `trackerPath`, `changelogPath`, `harnessPath`, `harnessEntrypoint`, `rolloutCredentialEnv`, `webRolloutCredentialEnv` when web surface, `attestUrl`, `installedInto[]`, optional `rolloutMcpPlatformPath`). **Reconcile manifest credential env:** for each `.fireweave/rollout-ready/*.json`, set `harness.rolloutCredentialEnv` from surface — `ts-server` → `POSTHOG_PROJECT_API_KEY`, `web` → `PUBLIC_POSTHOG_KEY` (see **Credential env canon**). Run `mcp__rollout-server__detect_rollout_ready` (anchor scan works). Run `mcp__rollout-server__reconcile` with `phase: "build"` (should pass on empty tree). **Smoke:** run `mcp__rollout-server__verify_prod_path` on one manifest per surface present; fix any **fail** before declaring done. Confirm `.fireweave/deploy-beacon.env.local` still exists. Tell the user to **reload Cursor** (Developer → Reload Window) so rules, hooks, and MCP reload. |
+| **9 — Record + verify** | Write `project.json.rolloutReady` (`initialized`, `language`, `strategy`, `sourceRoot`, `trackerPath`, `changelogPath`, `harnessPath`, `harnessEntrypoint`, `rolloutCredentialEnv`, `webRolloutCredentialEnv` when web surface, `attestUrl`, `defaultEnvironment`, `environments` (the env→tier profile map from Step 3a), `installedInto[]`, optional `rolloutMcpPlatformPath`). Keep `environments` in sync with the harness `FW_ENV_PROFILES`. **Reconcile manifest credential env:** for each `.fireweave/rollout-ready/*.json`, set `harness.rolloutCredentialEnv` from surface — `ts-server` → `POSTHOG_PROJECT_API_KEY`, `web` → `PUBLIC_POSTHOG_KEY` (see **Credential env canon**). Run `mcp__rollout-server__detect_rollout_ready` (anchor scan works). Run `mcp__rollout-server__reconcile` with `phase: "build"` (should pass on empty tree). **Smoke:** run `mcp__rollout-server__verify_prod_path` on one manifest per surface present with `{ feature, projectId }` only — **do not pass `targetEnvironment`** (tool auto-resolves prod-tier for binding lookup); fix any **fail** before declaring done. Confirm `.fireweave/deploy-beacon.env.local` still exists. **Reload notice — gate on the agents actually installed into (Step 2 / `installedInto[]`), never hardcode Cursor:** if Cursor artifacts were written (`.cursor/` present), tell the user to reload Cursor (Developer → Reload Window) so its rules/hooks/MCP reload; if Claude Code artifacts were written (`.claude/settings.json` hooks), tell them the `SessionStart`/`UserPromptSubmit` hooks apply on the next Claude Code session (start a new session or reload the IDE window). Name only the agents present — do not mention Cursor when the repo has no `.cursor/`. |
 
-**`--reinit`** re-detects agent/language; **always re-runs** `provision_deploy_beacon_env` (rotates key if needed); refreshes harness/tracker/strategy, manifest credential-env fields, API build script, and Cursor dev-loop artifacts; never loses `.fireweave/changelog/`. **`--remove`** reads `installedInto[]` and reverses precisely (rule, hooks, hook scripts, agent links, harness wiring recorded in `installedInto`) in one command.
+**`--reinit`** re-detects agent/language **and re-enumerates environments** (regenerates the env→tier profile map / harness `FW_ENV_PROFILES` from `list_project_environments`); re-resolves the prod-tier capability bindings; **always re-runs** `provision_deploy_beacon_env` when a prod-tier env exists (rotates key if needed); refreshes harness/tracker/strategy, manifest credential-env fields, API build script, and Cursor dev-loop artifacts; never loses `.fireweave/changelog/`. **`--remove`** reads `installedInto[]` and reverses precisely (rule, hooks, hook scripts, agent links, harness wiring recorded in `installedInto`) in one command.
 
 Every clarification uses `AskUserQuestion`.
 
@@ -63,11 +78,13 @@ Every clarification uses `AskUserQuestion`.
 | `.fireweave/deploy-beacon.env.local` | Gitignored local copy of **both** values for dev reference |
 | `.env.example` | Names only (`FW_ATTEST_URL=`, `FW_PROJECT_API_KEY=`; add `VITE_FW_*` when web surface) |
 | `project.json.rolloutReady.attestUrl` | Committed fw-server base URL (not secret) |
-| Cloud deploy secrets | User copies **both** vars to GitHub Actions / VM / docker-compose |
+| Cloud deploy secrets | User copies **both** vars into **each prod-tier environment's** runtime (see `cloudSecretDestinations`) |
+
+**Prod-tier only.** The beacon secrets belong wherever a **prod-tier** environment runs — never in the default/dev environment. If the project has no prod-tier environment, Step 3c defers the beacon entirely (no key, no question). When a prod-tier env exists, set the pair once per prod-tier environment's runtime (a `staging` service and a `production` service each need their own copy, scoped by `FW_ENV`).
 
 **Tool:** `mcp__rollout-server__provision_deploy_beacon_env` — calls `POST /v1/projects/:projectId/deploy-beacon-keys` via `fw api` (CLI bearer token). The session-gated `/api/projects/:id/ingest-keys` route is for the web control plane only.
 
-**After the tool returns:** `AskUserQuestion` — *"Where will production run?"* (GitHub Actions / VM / docker-compose / other). Paste the matching block from `cloudSecretDestinations`. PARK until the user confirms both secrets are set in that destination.
+**After the tool returns:** `AskUserQuestion` — *"Where does each prod-tier environment run?"* Offer ONLY the destinations `cloudSecretDestinations` returns for this repo's detected deploy targets (Render dashboard, GitHub Actions secrets, docker-compose, VM/process env, …) — **do not hardcode the option list**; it is derived from Step 2 detection. Paste the matching block from `cloudSecretDestinations`. **Verification is on trust:** no tool reads back a remote secret store, so the skill accepts the user's confirmation; the enforcing gate is the deploy-time attestation failing if the pair is absent. PARK until the user confirms both secrets are set in that destination.
 
 **Local dev (optional):** if the repo uses `.env.local`, pass `{ mergeRootEnvLocal: true }` to also merge both vars there.
 
@@ -116,9 +133,77 @@ Table of harness paths, `fw-tracker`, `.fireweave/rollout-ready/`, `.fireweave/c
 
 1. **Gate** user-facing or risky behavior behind OpenFeature via the harness — not legacy direct vendor SDK calls.
 2. Add `// @fireweave-flag <key>` at every flag evaluation site (grep-stable anchor).
-3. Add or update `.fireweave/rollout-ready/<feature>.json` (manifest is the committed ship contract).
-4. Set `change.stampId` in the manifest; append that id to `FW_STAMPS` in `fw-tracker/index.ts`.
+3. Add or update `.fireweave/rollout-ready/<feature>.json` by copying the **Manifest contract** block below — do NOT reverse-engineer the shape. `schema` is the literal `1`.
+4. **ID format (born-compliant — the ship tool rejects anything else).** Mint `change.id` as `chg_<ULID>` and `change.stampId` as `stmp_<ULID>` (the `chg_`/`stmp_` prefixes are hard-enforced by `build_register_rollout_from_manifest` at ship time; a date-slug like `2026-07-06-<feature>` will FAIL registration). Append the SAME `stmp_…` id to `FW_STAMPS` in every surface's `fw-tracker` — the prefix is required for the beacon and for `reconcile` to see the stamp at all.
 5. Before marking the task done, run `mcp__rollout-server__detect_rollout_ready` and `mcp__rollout-server__reconcile` with `phase: "build"`; fix all **block** findings.
+
+### Manifest contract (the committed ship contract — copy, don't invent)
+
+`.fireweave/rollout-ready/<feature>.json` must match this exact shape (validated by `RolloutReadyManifestSchema`; `safe-rollout-fast` reads it to build the `RolloutSpec`). Every field below is load-bearing — start from this and swap the values. Invariants the schema enforces: every `wrapPoints[].flagKey` and `telemetry.metrics[].guards` must be a declared `flags[].key`; `telemetry.dimensions` must equal `context.dimensions` (the cohort seam); a `guardrail` metric needs an OTLP-metrics-capable destination (Grafana/Datadog — **PostHog cannot ingest OTLP metrics**), so keep adoption metrics as `role: "adoption"` unless you wire a metrics vendor.
+
+```json
+{
+  "schema": 1,
+  "feature": "<feature-slug>",
+  "changeType": "new-feature",
+  "userFacing": true,
+  "change": {
+    "id": "chg_<ULID>",
+    "stampId": "stmp_<ULID>",
+    "title": "<human title>",
+    "description": "<what changes, one line>",
+    "author": "<you@org>",
+    "createdAt": "2026-07-06T00:00:00.000Z",
+    "branch": "<dev-branch>",
+    "backwardCompatible": "required",
+    "supersedes": [],
+    "supersededBy": [],
+    "status": "in-progress",
+    "migration": "<path/to/migration.sql or omit>"
+  },
+  "flagTelemetryProvider": "connected:posthog",
+  "flags": [
+    {
+      "key": "<feature-slug>",
+      "default": false,
+      "cohortKey": "userId",
+      "userFacing": true,
+      "description": "Off: <today's behavior>. On: <new behavior>.",
+      "tags": ["<area>"]
+    }
+  ],
+  "wrapPoints": [
+    {
+      "file": "packages/api/src/application/use-cases/<UseCase>.ts",
+      "symbol": "<UseCase>.execute",
+      "wrapStyle": "method-guard",
+      "flagKey": "<feature-slug>"
+    }
+  ],
+  "context": { "targetingKey": "userId", "dimensions": [] },
+  "telemetry": {
+    "metrics": [
+      { "name": "feature.<feature-slug>.adopted", "role": "adoption", "direction": "up-good", "guards": "<feature-slug>" },
+      { "name": "feature.<feature-slug>.error", "role": "adoption", "direction": "up-bad", "guards": "<feature-slug>" }
+    ],
+    "logs": [],
+    "traces": [],
+    "dimensions": []
+  },
+  "harness": {
+    "surface": "ts-server",
+    "path": "packages/api/src/fireweave/fw-harness.<ext>",
+    "rolloutCredentialEnv": "POSTHOG_PROJECT_API_KEY",
+    "attestUrlEnv": "FW_ATTEST_URL",
+    "attestCredentialEnv": "FW_PROJECT_API_KEY",
+    "posthogProjectId": "<prod-tier env's PostHog projectId>",
+    "flags": { "api": "openfeature", "sdk": "server", "devProvider": "in-memory", "rolloutProvider": "connected:posthog" },
+    "telemetry": { "api": "otel", "devExporter": "console", "rolloutTransport": "otlp", "semconv": "fireweave/rollout-otel-semconv-v1", "signals": {} }
+  }
+}
+```
+
+For a **web** surface use `harness.surface: "web"`, `flags.sdk: "web"`, `rolloutCredentialEnv: "PUBLIC_POSTHOG_KEY"`, and the web harness path. `harness.posthogProjectId` is the **prod-tier** environment's project id (the phantom-ramp guard compares it to what `flag.control` ramps — see **Credential env canon** and `project.json.rolloutReady.environments`).
 
 ### Ship
 
@@ -150,8 +235,8 @@ Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
 
 1. Implement behind the harness OpenFeature provider (not legacy direct PostHog/vendor calls).
 2. Add `// @fireweave-flag <key>` at each evaluation site.
-3. Add or update `.fireweave/rollout-ready/<feature>.json` (flags, wrapPoints, harness, telemetry, change metadata).
-4. Link `change.stampId` in the manifest and append it to `fw-tracker/index.ts` `FW_STAMPS`.
+3. Add or update `.fireweave/rollout-ready/<feature>.json` — copy the Manifest contract block in [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md); do not invent the shape. `schema` is the literal `1`.
+4. Mint `change.id` as `chg_<ULID>` and `change.stampId` as `stmp_<ULID>` (the prefixes are hard-required at ship — a date-slug fails registration). Append the same `stmp_…` id to every surface's `fw-tracker` `FW_STAMPS`.
 
 ## Before you finish a feature task
 
@@ -179,16 +264,20 @@ When `.cursor/` exists, ensure `.cursor/mcp.json` includes `rollout-server`:
     "rollout-server": {
       "command": "bun",
       "args": [
-        "run",
-        "<FIREWEAVE_PLATFORM_PATH>/packages/fw-plugins/src/plugins/fireweave/mcp/rollout-server/src/server.ts"
+        "<FIREWEAVE_PLATFORM_PATH>/packages/fw-plugins/src/plugins/fireweave/mcp/rollout-server/dist/server.js"
       ],
       "env": {
+        "FW_CLI_VERSION": "0.1.0",
         "PATH": "<FIREWEAVE_PLATFORM_PATH>/packages/fw-cli/bin:/usr/local/bin:/usr/bin:/bin"
       }
     }
   }
 }
 ```
+
+Prefer `dist/server.js` (prebuilt bundle, ~2s cold start). If missing, run
+`bun run build` in `.../rollout-server/` before wiring MCP. Fall back to
+`["run", ".../src/server.ts"]` only when the bundle cannot be built.
 
 If the repo already has a published-plugin `rollout-server` entry, keep it — only add when missing.
 

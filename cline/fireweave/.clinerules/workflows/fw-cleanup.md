@@ -22,7 +22,7 @@ on failure → `fw login` then `use_mcp_tool(server_name="rollout-server", tool_
 
 | Step | Action |
 |---|---|
-| **1 — Find candidates** | Run `use_mcp_tool(server_name="rollout-server", tool_name="find_cleanup_candidates")`. It scans `.fireweave/rollout-ready/` manifests for changes whose derived `status` is `stable` (server `RolloutState` = `completed` + soak) and gates each on MEASURED deadness (flag at 100% + zero recent off-branch evals). Without live measurement a candidate is returned `measurementPending` — never propose retiring an unconfirmed flag. |
+| **1 — Find candidates** | Run `use_mcp_tool(server_name="rollout-server", tool_name="find_cleanup_candidates")`. Supply a `measure` callback that queries PostHog in the **completed rollout's environment** (resolve via `GET /v1/rollouts/:id` → `environment`, then `get_project_capabilities` with that env for `posthogProjectId`). Without env-scoped measurement every candidate is `measurementPending`. |
 | **2 — Reconcile before removal** | Run `use_mcp_tool(server_name="rollout-server", tool_name="reconcile")` to confirm the flag's manifest entry, code anchor, and stamp are consistent before proposing removal — a measured-dead flag that still has live call-sites must drop its code branch + manifest entry + stamp together (same PR). |
 | **3 — Propose retirement** | For each confirmed measured-dead change, propose (via `ask_followup_question`): retire the flag at the provider, remove the dead flag-off branch, archive `.fireweave/changelog/<stampId>.json` to `_archive/`, and retire the associated guardrail/adoption metrics. Apply only on explicit confirmation. |
 

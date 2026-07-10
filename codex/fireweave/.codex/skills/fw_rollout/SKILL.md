@@ -58,6 +58,7 @@ via `guarded_call`): `register_rollout`, `add_rollout_participant`,
 nine ops. Reads (call `fw api` directly): `get_rollout_status`
 (`GET /v1/rollouts/{id}`), `list_open_rollouts`, `list_project_repos`,
 `list_project_environments`, `get_project_capabilities`,
+`get_environment_capabilities`, `resolve_environment_for_branch`,
 `get_recommendation_data` — six ops. Path params in `{braces}` are passed
 as flat args (e.g. `id`, `participantId`) and consumed into the URL; the
 remaining args form the request body.
@@ -593,16 +594,23 @@ stepNumber: '0.2' }`.
    running `/fw-rollout` in those repos against the same rolloutId.
 
 3. **Capability discovery.** Run
-   `Bash: fw api GET /v1/projects/<projectId>/capabilities` and parse the
-   JSON to enumerate which provider implements each capability for this
-   project. A rollout requires
-   bindings for ALL SIX capabilities below. For every capability that has
-   no provider, present a per-capability missing-config gate (`request_user_input`
+   `Bash: fw api GET /v1/projects/<projectId>/environments` and read
+   `defaultEnvironment` from the response (fall back to
+   `.fireweave/project.json` `defaultEnvironment` when absent). Then run
+   `Bash: fw api GET /v1/projects/<projectId>/capabilities --query '{"environment":"<defaultEnvironment>"}'`
+   and parse the JSON to enumerate which provider implements each capability
+   for the **default pipeline stage**. A rollout requires bindings for ALL
+   SIX capabilities in that environment. For every capability that has no
+   provider, present a per-capability missing-config gate (`request_user_input`
    with the three-option pattern), then record the most recent unbound
    capability in `lastConfigGap` (lockfile field) before proceeding so a
-   clean-exit resume can jump straight back to the gap. Walk the list in
-   the order shown — the first unbound capability blocks until resolved,
-   then move to the next.
+   clean-exit resume can jump straight back to the gap. Walk the list in the
+   order shown — the first unbound capability blocks until resolved, then move
+   to the next.
+
+   Portal links for missing capabilities MUST target the per-environment
+   configure path:
+   `https://app.fireweave.ai/projects/${projectId}/configure/environments/<defaultEnvironment>/capabilities/<capability-slug>/`
 
    The three options for every capability gate are:
 
@@ -742,22 +750,16 @@ stepNumber: '0.2' }`.
    Once all six capabilities resolve, clear `lastConfigGap` on the next
    lockfile write and continue to step 4 below.
 
-4. **Environment selection (D13).** Run
-   `Bash: fw api GET /v1/projects/<projectId>/environments` and parse the JSON.
+4. **Default environment (no picker).** Use `defaultEnvironment` from step 3
+   (or `production` when the registry is synthesised-only). Store it in
+   `workingSpec.environment` for register. Optionally warn when the current
+   git branch maps to a different environment:
+   `Bash: fw api POST /v1/projects/<projectId>/resolve-environment --body '{"branch":"<currentBranch>","repo":"<org/repo>"}'`
+   — if the resolved `slug` differs from `defaultEnvironment`, surface an
+   advisory (seal-time branch resolution is authoritative; do not block).
 
-   > **Gate `GATE-0.2-ENVIRONMENT-CHOICE`** — required.
-   >
-   > 1. Call `request_user_input` with the question and options below.
-   > 2. Call `mcp__rollout_server__write_confirmation_receipt` with
-   >    `{ gateId: 'GATE-0.2-ENVIRONMENT-CHOICE', questionHash, selectedOption,
-stepNumber: '0.2' }`.
-   > 3. Do not proceed past this point without a successful receipt write.
-
-**Gate `GATE-0.2-ENVIRONMENT-CHOICE`** — call `request_user_input` (single-choice; recommended first; "Other" auto-added):
-- Q: Which environment should the deploy gate watch?
-- Options:
-
-  - _one entry per environment in the registry (favourite first), plus "Other (custom name)" if needed. If the registry is empty, the server returns a synthesised `production` placeholder (D28) — present it normally; it auto-registers on first deploy webhook._
+   Do **not** run `GATE-0.2-ENVIRONMENT-CHOICE` — environment is injected
+   from the project default unless an admin explicitly overrides at register.
 
 5. **Baseline detection.** Call `mcp__rollout_server__detect_baseline`
    (local — needs git access) to find candidate baselines (last
@@ -1602,6 +1604,27 @@ Print a markdown summary covering:
   primary developer (you, unless multi-repo) opens the Rollouts tab and
   clicks Seal once all participating PRs are merged. The deploy gate
   arms after seal; the agent runs once all participants deploy.
+
+## Step 10.1 — Promotion offer (when auto-promote is off)
+
+After printing the Step 10 summary, if the rollout state is `completed` and
+`GET /v1/projects/<projectId>/environments` shows a next environment in the
+pipeline (higher `promotionRank` than the rollout's current env), offer manual
+promotion:
+
+> **Gate `GATE-10.1-PROMOTE`** — optional.
+
+**Gate `GATE-10.1-PROMOTE`** — call `request_user_input` (single-choice; recommended first; "Other" auto-added):
+- Q: Rollout completed in `<currentEnv>`. Promote to `<nextEnv>`?
+- Options:
+  - Promote to <nextEnv>
+  - Skip — I'll promote in the portal
+
+If the user promotes: `Bash: fw api POST /v1/rollouts/<rolloutId>/promote` and
+show the returned `childRolloutId`.
+
+Skip this step when the server already auto-promoted (child rollout exists) or
+no next environment is configured.
 
 ## Universal rules
 
