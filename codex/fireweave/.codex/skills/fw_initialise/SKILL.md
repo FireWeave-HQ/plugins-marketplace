@@ -251,6 +251,7 @@ When `.cursor/` exists, ensure `.cursor/mcp.json` includes `rollout-server`:
 1. Resolve platform path: `FIREWEAVE_PLATFORM_PATH` env → else walk parents for `fireweaveai-platform` → else `request_user_input` for the directory containing `packages/fw-plugins/.../rollout-server`.
 2. **Merge** into existing `mcpServers` — read `.cursor/mcp.json` first, spread existing servers, add/overwrite only `rollout-server`. Never replace the whole file. Record the path in `project.json.rolloutReady.rolloutMcpPlatformPath`.
 3. Use an **absolute** path in `args` — Cursor may ignore `cwd` when spawning MCP stdio.
+4. Set `FW_REPO_ROOT` to `${workspaceFolder}` — same as the published plugin's `mcp-config.ts`. MCP stdio cwd may be the plugin bundle, not the open workspace; all repo-scanning tools honour this env first.
 
 ```json
 {
@@ -261,6 +262,7 @@ When `.cursor/` exists, ensure `.cursor/mcp.json` includes `rollout-server`:
         "<FIREWEAVE_PLATFORM_PATH>/packages/fw-plugins/src/plugins/fireweave/mcp/rollout-server/dist/server.js"
       ],
       "env": {
+        "FW_REPO_ROOT": "${workspaceFolder}",
         "FW_CLI_VERSION": "0.1.0",
         "PATH": "<FIREWEAVE_PLATFORM_PATH>/packages/fw-cli/bin:/usr/local/bin:/usr/bin:/bin"
       }
