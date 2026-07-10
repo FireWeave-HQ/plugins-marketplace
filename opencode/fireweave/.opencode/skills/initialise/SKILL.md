@@ -54,9 +54,9 @@ and PARK. Then run the Step 0.1b tool-manifest check via
 | **5 — Scaffold `fw-tracker/` + `.fireweave/`** | Empty `fw-tracker/` const tree at the idiomatic path; `.fireweave/changelog/` + `_archive/`, `.fireweave/rollout-ready/` (manifests), `PROVIDERS.md`, `config.json`. Ensure `.fireweave/.gitignore` contains `deploy-beacon.env.local` (the provision tool writes this — re-check if missing). Also write `.fireweave/hooks/rollout-build-gate.mjs` (see **Build-gate script** below) and `.fireweave/hooks/rollout-build-gate.sh` wrapper. |
 | **6 — Wire the harness into the app entrypoint** | Inject `await initFwHarness()` as the FIRST awaited statement in the detected entrypoint, and record the location in `project.json.rolloutReady.harnessEntrypoint`. `rollout-server_verify_prod_path` asserts this. |
 | **7 — Standing instructions + agent links** | Write `.fireweave/agent-instructions.md` (see **Agent instructions template** below). Link it from every detected agent file (`AGENTS.md`, `CLAUDE.md`, …). **Do not** rely on a one-line link alone for Cursor — Step 7b is mandatory when `.cursor/` exists. |
-| **7b — Cursor dev loop (when `.cursor/` exists)** | Write `.cursor/rules/fireweave-rollout-ready.mdc` (always-on rule; see template). Merge `rollout-server` into `.cursor/mcp.json` (see **MCP merge**). Ensure the four FireWeave skills exist under `.cursor/skills/` (copy from plugin dist or platform source if missing). Record every path in `installedInto[]`. |
+| **7b — Cursor dev loop (when `.cursor/` exists)** | Write `.cursor/rules/fireweave-rollout-ready.mdc` (always-on rule; see template). Merge `rollout-server` into `.cursor/mcp.json` (see **MCP merge** — plugin launcher only). Ensure the four FireWeave skills exist under `.cursor/skills/` (copy from the installed plugin bundle only). Record every path in `installedInto[]`. |
 | **8 — Hooks** | **Cursor** (when `.cursor/` exists): write `.cursor/hooks.json` + executable scripts under `.cursor/hooks/` (see **Cursor hooks**). **Claude Code** (when `.claude/` exists): optional `UserPromptSubmit` + `SessionStart` via `rollout-intent-gate.sh` in `.claude/hooks/` (same intent text as the Cursor rule). |
-| **9 — Record + verify** | Write `project.json.rolloutReady` (`initialized`, `language`, `strategy`, `sourceRoot`, `trackerPath`, `changelogPath`, `harnessPath`, `harnessEntrypoint`, `rolloutCredentialEnv`, `webRolloutCredentialEnv` when web surface, `attestUrl`, `defaultEnvironment`, `environments` (the env→tier profile map from Step 3a), `installedInto[]`, optional `rolloutMcpPlatformPath`). Keep `environments` in sync with the harness `FW_ENV_PROFILES`. **Reconcile manifest credential env:** for each `.fireweave/rollout-ready/*.json`, set `harness.rolloutCredentialEnv` from surface — `ts-server` → `POSTHOG_PROJECT_API_KEY`, `web` → `PUBLIC_POSTHOG_KEY` (see **Credential env canon**). Run `rollout-server_detect_rollout_ready` (anchor scan works). Run `rollout-server_reconcile` with `phase: "build"` (should pass on empty tree). **Smoke:** run `rollout-server_verify_prod_path` on one manifest per surface present with `{ feature, projectId }` only — **do not pass `targetEnvironment`** (tool auto-resolves prod-tier for binding lookup); fix any **fail** before declaring done. Confirm `.fireweave/deploy-beacon.env.local` still exists. **Reload notice — gate on the agents actually installed into (Step 2 / `installedInto[]`), never hardcode Cursor:** if Cursor artifacts were written (`.cursor/` present), tell the user to reload Cursor (Developer → Reload Window) so its rules/hooks/MCP reload; if Claude Code artifacts were written (`.claude/settings.json` hooks), tell them the `SessionStart`/`UserPromptSubmit` hooks apply on the next Claude Code session (start a new session or reload the IDE window). Name only the agents present — do not mention Cursor when the repo has no `.cursor/`. |
+| **9 — Record + verify** | Write `project.json.rolloutReady` (`initialized`, `language`, `strategy`, `sourceRoots`, `scanExclude`, `mcp.mode` (`plugin-launcher`), `sdkDev`, `deploySdkVersion`, `trackerPath`, `changelogPath`, `harnessPath`, `harnessEntrypoint`, `rolloutCredentialEnv`, `webRolloutCredentialEnv` when web surface, `attestUrl`, `defaultEnvironment`, `environments` (the env→tier profile map from Step 3a), `installedInto[]`). Keep `environments` in sync with the harness `FW_ENV_PROFILES`. **Reconcile manifest credential env:** for each `.fireweave/rollout-ready/*.json`, set `harness.rolloutCredentialEnv` from surface — `ts-server` → `POSTHOG_PROJECT_API_KEY`, `web` → `PUBLIC_POSTHOG_KEY` (see **Credential env canon**). Run `rollout-server_detect_rollout_ready` (anchor scan works). Run `rollout-server_reconcile` with `phase: "build"` (must pass when no orphan anchors exist under `sourceRoots`). **Smoke:** run `rollout-server_verify_prod_path` on one manifest per surface present with `{ feature, projectId }` only — **do not pass `targetEnvironment`** (tool auto-resolves prod-tier for binding lookup); fix any **fail** before declaring done. Confirm `.fireweave/deploy-beacon.env.local` still exists. **Reload notice — gate on the agents actually installed into (Step 2 / `installedInto[]`), never hardcode Cursor:** if Cursor artifacts were written (`.cursor/` present), tell the user to reload Cursor (Developer → Reload Window) so its rules/hooks/MCP reload; if Claude Code artifacts were written (`.claude/settings.json` hooks), tell them the `SessionStart`/`UserPromptSubmit` hooks apply on the next Claude Code session (start a new session or reload the IDE window). Name only the agents present — do not mention Cursor when the repo has no `.cursor/`. |
 
 **`--reinit`** re-detects agent/language **and re-enumerates environments** (regenerates the env→tier profile map / harness `FW_ENV_PROFILES` from `list_project_environments`); re-resolves the prod-tier capability bindings; **always re-runs** `provision_deploy_beacon_env` when a prod-tier env exists (rotates key if needed); refreshes harness/tracker/strategy, manifest credential-env fields, API build script, and Cursor dev-loop artifacts; never loses `.fireweave/changelog/`. **`--remove`** reads `installedInto[]` and reverses precisely (rule, hooks, hook scripts, agent links, harness wiring recorded in `installedInto`) in one command.
 
@@ -247,45 +247,66 @@ Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
 
 ## MCP merge (Step 7b)
 
-When `.cursor/` exists, ensure `.cursor/mcp.json` includes `rollout-server`:
+When `.cursor/` exists, ensure `.cursor/mcp.json` includes `rollout-server` using the **published plugin launcher** (customer / dogfood mode — same as `build/lib/mcp-config.ts`):
 
-1. Resolve platform path: `FIREWEAVE_PLATFORM_PATH` env → else walk parents for `fireweaveai-platform` → else `the `question` tool` for the directory containing `packages/fw-plugins/.../rollout-server`.
-2. **Merge** into existing `mcpServers` — read `.cursor/mcp.json` first, spread existing servers, add/overwrite only `rollout-server`. Never replace the whole file. Record the path in `project.json.rolloutReady.rolloutMcpPlatformPath`.
-3. Use an **absolute** path in `args` — Cursor may ignore `cwd` when spawning MCP stdio.
-4. Set `FW_REPO_ROOT` to `${workspaceFolder}` — same as the published plugin's `mcp-config.ts`. MCP stdio cwd may be the plugin bundle, not the open workspace; all repo-scanning tools honour this env first.
+1. **PARK** if `mcp/rollout-server/launcher.sh` is missing — the user must run `/add-plugin fireweave@…` first so the plugin bundle (launcher + `urls.json`) is present in the workspace.
+2. Read existing `.cursor/mcp.json` (or start with `{ "mcpServers": {} }`). **Merge** — spread existing servers; add/overwrite only `rollout-server` when it does not already reference `launcher.sh`.
+3. **Never** walk parents for `fireweaveai-platform`, **never** write `packages/fw-plugins/.../dist/server.js`, **never** inject `packages/fw-cli/bin` into `PATH`, and **never** set `rolloutMcpPlatformPath` in `project.json`.
+4. Platform-engineer MCP dev (monorepo `dist/server.js` wiring) is **out of scope** for `/initialise` — use `bun run dev:install` in `packages/fw-plugins` instead.
 
 ```json
 {
   "mcpServers": {
     "rollout-server": {
-      "command": "bun",
-      "args": [
-        "<FIREWEAVE_PLATFORM_PATH>/packages/fw-plugins/src/plugins/fireweave/mcp/rollout-server/dist/server.js"
-      ],
+      "type": "stdio",
+      "command": "${workspaceFolder}/mcp/rollout-server/launcher.sh",
+      "args": [],
       "env": {
-        "FW_REPO_ROOT": "${workspaceFolder}",
-        "FW_CLI_VERSION": "0.1.0",
-        "PATH": "<FIREWEAVE_PLATFORM_PATH>/packages/fw-cli/bin:/usr/local/bin:/usr/bin:/bin"
+        "FW_PLUGIN_ROOT": "${workspaceFolder}/mcp/rollout-server",
+        "FW_REPO_ROOT": "${workspaceFolder}"
       }
     }
   }
 }
 ```
 
-Prefer `dist/server.js` (prebuilt bundle, ~2s cold start). If missing, run
-`bun run build` in `.../rollout-server/` before wiring MCP. Fall back to
-`["run", ".../src/server.ts"]` only when the bundle cannot be built.
+If `.cursor/mcp.json` already has a `rollout-server` entry whose `command` ends with `launcher.sh`, **keep it unchanged**.
 
-If the repo already has a published-plugin `rollout-server` entry, keep it — only add when missing.
+When copying FireWeave skills into `.cursor/skills/`, copy from the **installed plugin bundle only** — never from `packages/fw-plugins/` platform source.
+
+---
+
+## Scan scope (Step 5 + Step 9)
+
+Persist `rolloutReady.sourceRoots` and `rolloutReady.scanExclude` in `.fireweave/project.json`. **`@fireweaveai/deploy-sdk` defaults are customer-generic** (`**/*.test.ts`, `**/*.spec.ts`, `**/__tests__/**` only) — it does **not** embed monorepo paths.
+
+During **Step 2**, if this repo is the FireWeave platform monorepo (`packages/deploy-sdk` and `packages/fw-plugins` both present), **write** these dogfood values into `project.json` (do not rely on runtime auto-detection):
+
+| Field | Platform dogfood value |
+|---|---|
+| `sourceRoots` | One repo-relative root per application surface detected in Step 2 (server API package + web UI package) |
+| `scanExclude` | `**/*.test.ts`, `**/*.spec.ts`, `**/__tests__/**`, `packages/deploy-sdk/**`, `packages/fw-plugins/**`, `packages/contracts/**` |
+
+Customer repos: leave `sourceRoots` empty (scan whole repo) unless the app layout needs narrowing; `scanExclude` can stay at generic test patterns.
+
+`reconcile`, `detect_rollout_ready`, and the build gate read **only** `project.json` via `resolveRolloutScanOptions` in `@fireweaveai/deploy-sdk/flags`.
+
+**deploy-sdk dependency:** `bun add @fireweaveai/deploy-sdk@^0.1.0` (semver from npm). Record `rolloutReady.deploySdkVersion`. Only when the user explicitly opts into SDK co-development (`rolloutReady.sdkDev: true` or `FIREWEAVE_SDK_DEV=1`) use `workspace:*`.
 
 ---
 
 ## Build-gate script (Step 5)
 
-Write `.fireweave/hooks/rollout-build-gate.mjs` — standalone Node (no extra deps). It prints JSON `{ pass, findings[] }` to stdout:
+Copy from the **installed plugin bundle** (same tree as `/add-plugin`):
 
+- `hooks/rollout-build-gate.mjs` → `.fireweave/hooks/rollout-build-gate.mjs`
+- `hooks/rollout-build-gate.sh` → `.fireweave/hooks/rollout-build-gate.sh` (`chmod +x`)
+
+Do **not** copy from a monorepo checkout path (`packages/fw-plugins/...`). The gate prints JSON `{ pass, findings[] }` to stdout:
+
+- Read `.fireweave/project.json` → `rolloutReady.sourceRoots` + `rolloutReady.scanExclude` (generic test-pattern fallbacks when unset).
 - Read all `.fireweave/rollout-ready/*.json` → collect manifest flag keys (parse `flags[].key`; skip invalid files with a block finding).
-- Walk the **entire repo** from root for anchors — same coverage as `detect_rollout_ready` / `reconcile`: all `*.{ts,tsx,js,jsx,mjs,cjs,mts,cts,go,rs,dart,py,rb,java,kt,kts,swift,php,cs}` files, skipping path segments `node_modules`, `dist`, `build`, `coverage`, and dot-directories (do **not** limit to `apps/` / `packages/` only).
+- Walk the repo for anchors under `sourceRoots`, honouring `scanExclude` — same rules as `detect_rollout_ready` / `reconcile`.
 - Match `@fireweave-flag <key>` in any comment leader (line, block, hash) — same regex as deploy-sdk.
 - **block** if anchor key has no manifest entry.
 - **block** if manifest flag has no anchor.
