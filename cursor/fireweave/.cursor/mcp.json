@@ -5,7 +5,8 @@
       "command": "${workspaceFolder}/mcp/rollout-server/launcher.sh",
       "args": [],
       "env": {
-        "FW_PLUGIN_ROOT": "${workspaceFolder}/mcp/rollout-server"
+        "FW_PLUGIN_ROOT": "${workspaceFolder}/mcp/rollout-server",
+        "FW_REPO_ROOT": "${workspaceFolder}"
       }
     }
   }
