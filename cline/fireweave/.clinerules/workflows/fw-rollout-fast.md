@@ -17,6 +17,10 @@ swaps a provider registration (D26). **No functional code changes at promotion.*
 
 > If `.fireweave/rollout-ready/` does NOT exist, this repo is not initialised —
 > use `/fireweave:safe-rollout` (the legacy wrap-from-scratch path) instead.
+>
+> **HARD:** If the feature under ship has no valid rollout-ready package (manifest +
+> anchors + stamp), **abort** — run `assert_dev_checklist` and finish the package.
+> Do not wrap/backfill during `/safe-rollout-fast`.
 
 ## Step 0 — Auth precondition
 
@@ -36,9 +40,10 @@ with an upgrade message — the server is older than this skill expects.
 
 | Step | Action |
 |---|---|
+| **0.2 — Dev checklist (fail closed)** | Run `use_mcp_tool(server_name="rollout-server", tool_name="assert_dev_checklist")` with `{ feature }`. On any **block** → PARK and refuse to register. Backfill during ship is forbidden. |
 | **1 — Detect manifest + stamps** | Read `.fireweave/rollout-ready/<feature>.json` (the load-bearing committed contract) and the active change stamps in `.fireweave/changelog/` + `fw-tracker`. Run `use_mcp_tool(server_name="rollout-server", tool_name="detect_rollout_ready")` to confirm the `// @fireweave-flag <key>` anchors are present for every manifest flag. |
 | **2 — Reconcile (gate)** | Run `use_mcp_tool(server_name="rollout-server", tool_name="reconcile")` with `phase: "ship"` — the `manifest ⇄ (anchor ∪ FW_DUMP ∪ stamp)` gate. A coded-but-unmanifested flag, an orphan manifest entry, or a stamp whose flag is gone all FAIL. Do not proceed on a blocking finding. |
-| **3 — Verify prod path (NO swap, D26)** | Run `use_mcp_tool(server_name="rollout-server", tool_name="verify_prod_path")` with `{ feature, projectId }` only — **do not pass `targetEnvironment`**. The tool auto-resolves the **prod-tier** environment from `project.json` `rolloutReady.environments` for PostHog binding lookup (phantom-ramp guard). This checks the harness **prod branch** wiring — it is **not** the rollout target environment. Checklist: (1) vendor provider in `isProd()` branch; (2) credential env in `.env.example`; (3) manifest `posthogProjectId` matches bound project; (4) `initFwHarness()` awaited; (5) optional smoke-eval. Unsupported surfaces are **skipped/xfail**. |
+| **3 — Verify prod path (NO swap, D26)** | Run `use_mcp_tool(server_name="rollout-server", tool_name="verify_prod_path")` with `{ feature, projectId }` only — **do not pass `targetEnvironment`**. The tool matches PostHog bindings using the **already-configured** `harness.posthogProjectId` / `rolloutReady.promotionEnvironment` (never "first prod-tier" map order). Checklist: (1) vendor provider in `isProd()` branch; (2) credential env in `.env.example`; (3) manifest `posthogProjectId` matches bound project; (4) `initFwHarness()` awaited; (5) optional smoke-eval. Unsupported surfaces are **skipped/xfail**. |
 | **4 — Build + register (single-shot promote)** | Rollout `environment` is resolved automatically from the FireWeave project default (UI `isDefault` → API → `.fireweave/project.json`). **Never pass `environment` to `build_register_rollout_from_manifest` or `register_rollout`** — mismatches are rejected. **Never** use legacy draft-first register. (1) resolve git HEAD/branch/repo; (2) call `use_mcp_tool(server_name="rollout-server", tool_name="build_register_rollout_from_manifest")` with `{ feature, projectId, firstParticipant: { repo, branch, commitSha: <HEAD> }, primaryRepo }` only; (3) `assert_register_rollout_args`; (4) `guarded_call` `register_rollout`; (5) lockfile `{ lastStep: "finalize", rolloutId, participantId, role: "creator", diffApplied: true }`. To ship to a different environment than the project default, change the default in the FireWeave UI (Environments → Save pipeline) first — do not override via tool args. |
 | **5 — Ramp on the deploy-liveness gate** | The `awaiting-deploys → ramping` gate is dual-source: the boot **stamp beacon** (`stamps[]`, exact `stampId` match) advances the participant, and/or the GitHub `deployment_status` webhook (SHA-containment) where a `commitSha` is present. The real autonomous engine then takes over — durable Restate soak, `ramping → completed`, guardrails govern auto-promote/rollback via `flag.control`. |
 
@@ -49,7 +54,7 @@ Every clarification uses `ask_followup_question` — never raw open-ended prompt
 | Concern | Source | Agent action |
 |---|---|---|
 | **Rollout target** (`register_rollout` `environment`) | FireWeave UI default (`isDefault`) → API → `.fireweave/project.json` | **Never pass `environment`** to `build_register_rollout_from_manifest` or `register_rollout` |
-| **Prod-path binding lookup** (`verify_prod_path`) | First prod-tier slug in `project.json` `rolloutReady.environments` | **Never pass `targetEnvironment`** — tool auto-resolves prod-tier for PostHog binding |
+| **Prod-path binding lookup** (`verify_prod_path`) | Manifest `harness.posthogProjectId` → matching `rolloutReady.environments` / `promotionEnvironment` | **Never pass `targetEnvironment`** — do not invent a different PostHog project |
 
 Passing `environment: "stage"` (or any prod-tier slug) when the UI default is `dev` is a common agent mistake — the MCP server rejects it.
 
@@ -67,6 +72,7 @@ Passing `environment: "stage"` (or any prod-tier slug) when the UI default is `d
     { "name": "verify_prod_path", "server": "rollout-server" },
     { "name": "build_register_rollout_from_manifest", "server": "rollout-server" },
     { "name": "assert_register_rollout_args", "server": "rollout-server" },
+    { "name": "assert_dev_checklist", "server": "rollout-server" },
     { "name": "eject", "server": "rollout-server" }
   ]
 }
