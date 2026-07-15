@@ -1272,7 +1272,10 @@ For each confirmed wrap point (grouped by its `flagKey`):
    in Step 6 inline (e.g. counter `feature.<flag.key>.adopted` on entry,
    counter `feature.<flag.key>.error` on caught exceptions / failure
    results, timer `feature.<flag.key>.duration_ms` spanning the new
-   branch).
+   branch). **Hard rule:** `assert_dev_checklist` / promote-fast will
+   **block** if a declared `telemetry.metrics[].name` is missing as a
+   string-literal emit arg in wrap-point files — registry-only names are
+   forbidden.
 5. Use `wp.cohortKeyExpression` from Step 5 verbatim as the
    `cohortKey: <expr>` argument so the controller buckets users on the
    same identifier the operator confirmed.

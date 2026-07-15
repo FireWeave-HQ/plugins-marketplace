@@ -130,7 +130,7 @@ manifest later, `/fw-rollout-fast` and clients cannot rely on promote-not-wrap.
 
 1. **FIRST** — create or update `.fireweave/rollout-ready/<feature>.json` (copy the **Manifest contract** below). Mint `chg_<ULID>` + `stmp_<ULID>` (the `chg_`/`stmp_` prefixes are hard-enforced by `build_register_rollout_from_manifest` at ship time; a date-slug fails registration). Append the stamp to every surface `FW_STAMPS`.
 2. Gate behavior behind OpenFeature via the harness — not legacy direct vendor SDK calls. Add `// @fireweave-flag <key>` at every evaluation site **while writing code**.
-3. **BEFORE calling the task done** — run `mcp__rollout_server__assert_dev_checklist` with `{ feature }`. **PARK on any block.** Also run `detect_rollout_ready` + `reconcile` phase `build`.
+3. **BEFORE calling the task done** — run `mcp__rollout_server__assert_dev_checklist` with `{ feature }`. **PARK on any block.** Checklist hard-fails if `telemetry.metrics[].name` entries are declared without emit sites in wrap-point files (dummy / registry-only metrics are forbidden). Also run `detect_rollout_ready` + `reconcile` phase `build`.
 4. Do NOT open a PR / declare done until `assert_dev_checklist.pass === true`.
 
 ### Do not
@@ -234,7 +234,7 @@ Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
 
 1. **FIRST** create/update `.fireweave/rollout-ready/<feature>.json` (Manifest contract in agent-instructions) + mint `chg_`/`stmp_` + append stamp to `FW_STAMPS`.
 2. Implement behind the harness OpenFeature provider with `// @fireweave-flag <key>` at each evaluation site.
-3. **BEFORE done** call `mcp__rollout_server__assert_dev_checklist` with `{ feature }` — PARK on any block. Also `reconcile` phase `build`.
+3. **BEFORE done** call `mcp__rollout_server__assert_dev_checklist` with `{ feature }` — PARK on any block (includes dummy metrics with no emit sites). Also `reconcile` phase `build`.
 4. Backfill after coding is forbidden. Do not write repo-local `mcp/`.
 
 ## Ship path
