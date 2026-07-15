@@ -54,12 +54,13 @@ and PARK. Then run the Step 0.1b tool-manifest check via
 | **4 — Scaffold harness (environment-keyed, both branches, D26)** | Generate `fireweave/fw-harness.<ext>` from the surface template. Emit the `FW_ENV_PROFILES` map + `FW_DEFAULT_ENV` from Step 3a's env→tier profile (do NOT ship the template's placeholder rows unchanged — regenerate them from the project's environments). The harness resolves the running environment NAME (`resolveFwEnvName`), looks up its tier, and selects: `dev` → in-memory OpenFeature provider + OTel console exporter; `prod` → the connected vendor's real provider + direct OTLP. `isProd()` is retained ONLY as the unknown-env tier fallback and the token `verify_prod_path` greps for. The harness imports `fw-tracker/index`, imports `resolveBootBeaconFromEnv` from `@fireweaveai/deploy-sdk/attest`, and calls `initFwAttestation({ stamps: FW_STAMPS, ...resolveBootBeaconFromEnv({ env: process.env, prod }) })` via PLAIN static imports (no glob/embed/build script). Because the beacon scopes off `FW_ENV`, document that **`FW_ENV` must be set per environment** (staging → `FW_ENV=staging`) so classification and attestation agree. **TS-server `.mjs` harness:** patch the API package `build` script to copy compiled harness artifacts — see **API Docker build** below. |
 | **5 — Scaffold `fw-tracker/` + `.fireweave/`** | Empty `fw-tracker/` const tree at the idiomatic path; `.fireweave/changelog/` + `_archive/`, `.fireweave/rollout-ready/` (manifests), `PROVIDERS.md`, `config.json`. Ensure `.fireweave/.gitignore` contains `deploy-beacon.env.local` (the provision tool writes this — re-check if missing). Also write `.fireweave/hooks/rollout-build-gate.mjs` (see **Build-gate script** below) and `.fireweave/hooks/rollout-build-gate.sh` wrapper. |
 | **6 — Wire the harness into the app entrypoint** | Inject `await initFwHarness()` as the FIRST awaited statement in the detected entrypoint, and record the location in `project.json.rolloutReady.harnessEntrypoint`. `use_mcp_tool(server_name="rollout-server", tool_name="verify_prod_path")` asserts this. |
-| **7 — Standing instructions + agent links** | Write `.fireweave/agent-instructions.md` (see **Agent instructions template** below). Link it from every detected agent file (`AGENTS.md`, `CLAUDE.md`, …). **Do not** rely on a one-line link alone for Cursor — Step 7b is mandatory when `.cursor/` exists. |
+| **7 — Standing instructions + agent links** | Write `.fireweave/agent-instructions.md` (see **Agent instructions template** below). Link it from every detected agent file (`AGENTS.md`, `CLAUDE.md`, …). **Do not** rely on a one-line link alone: Step 7b is mandatory when `.cursor/` exists, Step 7c is mandatory when `.claude/` exists. Each host needs its always-on standing surface, not just a link. |
 | **7b — Cursor dev loop (when `.cursor/` exists)** | Write `.cursor/rules/fireweave-rollout-ready.mdc` (always-on rule; see template). **HARD — Cursor plugin MCP only:** do **NOT** write or merge `.cursor/mcp.json`, do **NOT** copy `mcp/rollout-server/` into the repo, do **NOT** download `bin/server-*`. Confirm `list_registered_tools` works via the Cursor FireWeave plugin (`plugin-fireweave-rollout-server`). Set `rolloutReady.mcp.mode = "cursor-plugin"`. If repo-local `mcp/rollout-server/launcher.sh` already exists → delete it (and empty workspace `.cursor/mcp.json` that points at it). Ensure the four FireWeave skills exist under `.cursor/skills/` (copy from the installed plugin bundle only). Record every path in `installedInto[]` — never include `mcp/`. |
-| **8 — Hooks** | **Cursor** (when `.cursor/` exists): write `.cursor/hooks.json` + executable scripts under `.cursor/hooks/` (see **Cursor hooks**). **Claude Code** (when `.claude/` exists): optional `UserPromptSubmit` + `SessionStart` via `rollout-intent-gate.sh` in `.claude/hooks/` (same intent text as the Cursor rule). Non-Cursor hosts that need an install-time launcher use `fw mcp install` (`mcp.mode: "cli-install"` / `"plugin-launcher"`) — never Cursor's happy path. |
-| **9 — Record + verify** | Write `project.json.rolloutReady` (`initialized`, `language`, `strategy`, `sourceRoots`, `scanExclude`, `mcp.mode` (`cursor-plugin` when Cursor; else `plugin-launcher`/`cli-install`), `sdkDev`, `deploySdkVersion`, `trackerPath`, `changelogPath`, `harnessPath`, `harnessEntrypoint`, `rolloutCredentialEnv`, `webRolloutCredentialEnv` when web surface, `attestUrl`, `defaultEnvironment`, `promotionEnvironment` (the prod-tier env whose PostHog id is wired into the harness — ask if multiple prod-tier envs), `environments` (env→`{ tier, posthogProjectId }` from Step 3a), `posthogProjectId` (promotion env's id), `installedInto[]`). Keep `environments` in sync with the harness `FW_ENV_PROFILES`. **Reconcile manifest credential env:** for each `.fireweave/rollout-ready/*.json`, set `harness.rolloutCredentialEnv` from surface — `ts-server` → `POSTHOG_PROJECT_API_KEY`, `web` → `PUBLIC_POSTHOG_KEY` (see **Credential env canon**). Run `use_mcp_tool(server_name="rollout-server", tool_name="detect_rollout_ready")` (anchor scan works). Run `use_mcp_tool(server_name="rollout-server", tool_name="reconcile")` with `phase: "build"` (must pass when no orphan anchors exist under `sourceRoots`). **Smoke:** run `use_mcp_tool(server_name="rollout-server", tool_name="verify_prod_path")` on one manifest per surface present with `{ feature, projectId }` only — **do not pass `targetEnvironment`** (tool matches `harness.posthogProjectId` / `promotionEnvironment`); fix any **fail** before declaring done. Confirm `.fireweave/deploy-beacon.env.local` still exists. **Hard assert:** `mcp/` must not exist under the repo when `mcp.mode` is `cursor-plugin`. **Reload notice — gate on the agents actually installed into (Step 2 / `installedInto[]`), never hardcode Cursor:** if Cursor artifacts were written (`.cursor/` present), tell the user to reload Cursor (Developer → Reload Window) so its rules/hooks/MCP reload; if Claude Code artifacts were written (`.claude/settings.json` hooks), tell them the `SessionStart`/`UserPromptSubmit` hooks apply on the next Claude Code session. Name only the agents present. |
+| **7c — Claude Code dev loop (when `.claude/` exists)** | Symmetric with 7b — the standing rule for Claude Code is the always-loaded `CLAUDE.md` block (Claude has no `alwaysApply` rule file; `CLAUDE.md` IS the always-on surface). **Mandatory when `.claude/` exists:** upsert the **FireWeave rollout-ready HARD ORDER block** into `CLAUDE.md` (see **CLAUDE.md rollout-ready block** template) — a full HARD ORDER, not the one-line pointer. The one-line link alone is NOT sufficient for Claude Code (it under-triggers on large feature prompts). Record `CLAUDE.md` in `installedInto[]`. |
+| **8 — Hooks** | **Cursor** (when `.cursor/` exists): write `.cursor/hooks.json` + executable scripts under `.cursor/hooks/` (see **Cursor hooks**). **Claude Code** (when `.claude/` exists — MANDATORY, not optional): write executable `.claude/hooks/rollout-intent-gate.sh` (see **Claude Code hook**) and wire `UserPromptSubmit` + `SessionStart` in `.claude/settings.json` using a **fail-open guarded command** so a missing script can never error the hook. **Commit both `.claude/settings.json` AND the hook script** — settings without the script is the drift that silently no-ops the reminder on fresh checkouts/branches. Non-Cursor hosts that need an install-time launcher use `fw mcp install` (`mcp.mode: "cli-install"` / `"plugin-launcher"`) — never Cursor's happy path. |
+| **9 — Record + verify** | Write `project.json.rolloutReady` (`initialized`, `language`, `strategy`, `sourceRoots`, `scanExclude`, `mcp.mode` (`cursor-plugin` when Cursor; else `plugin-launcher`/`cli-install`), `sdkDev`, `deploySdkVersion`, `trackerPath`, `changelogPath`, `harnessPath`, `harnessEntrypoint`, `rolloutCredentialEnv`, `webRolloutCredentialEnv` when web surface, `attestUrl`, `defaultEnvironment`, `promotionEnvironment` (the prod-tier env whose PostHog id is wired into the harness — ask if multiple prod-tier envs), `environments` (env→`{ tier, posthogProjectId }` from Step 3a), `posthogProjectId` (promotion env's id), `installedInto[]`). Keep `environments` in sync with the harness `FW_ENV_PROFILES`. **Reconcile manifest credential env:** for each `.fireweave/rollout-ready/*.json`, set `harness.rolloutCredentialEnv` from surface — `ts-server` → `POSTHOG_PROJECT_API_KEY`, `web` → `PUBLIC_POSTHOG_KEY` (see **Credential env canon**). Run `use_mcp_tool(server_name="rollout-server", tool_name="detect_rollout_ready")` (anchor scan works). Run `use_mcp_tool(server_name="rollout-server", tool_name="reconcile")` with `phase: "build"` (must pass when no orphan anchors exist under `sourceRoots`). **Smoke:** run `use_mcp_tool(server_name="rollout-server", tool_name="verify_prod_path")` on one manifest per surface present with `{ feature, projectId }` only — **do not pass `targetEnvironment`** (tool matches `harness.posthogProjectId` / `promotionEnvironment`); fix any **fail** before declaring done. Confirm `.fireweave/deploy-beacon.env.local` still exists. **Hard assert (Cursor):** `mcp/` must not exist under the repo when `mcp.mode` is `cursor-plugin`. **Hard assert (Claude Code) — when `.claude/` exists:** (a) `CLAUDE.md` contains the rollout-ready HARD ORDER block (not just the one-line link); (b) `.claude/hooks/rollout-intent-gate.sh` exists AND is executable (`chmod +x`); (c) `.claude/settings.json` references it under `UserPromptSubmit` and `SessionStart` with the fail-open guarded command; (d) `git check-ignore` does NOT match the hook script or `CLAUDE.md` (they MUST be committable — an ignored/uncommitted hook is the drift that no-ops on fresh checkouts). Fix any miss before declaring done. **Reload notice — gate on the agents actually installed into (Step 2 / `installedInto[]`), never hardcode Cursor:** if Cursor artifacts were written (`.cursor/` present), tell the user to reload Cursor (Developer → Reload Window) so its rules/hooks/MCP reload; if Claude Code artifacts were written (`.claude/settings.json` hooks), tell them the `SessionStart`/`UserPromptSubmit` hooks apply on the next Claude Code session. Name only the agents present. |
 
-**`--reinit`** re-detects agent/language **and re-enumerates environments** (regenerates the env→tier profile map / harness `FW_ENV_PROFILES` from `list_project_environments`); re-resolves the prod-tier capability bindings; **always re-runs** `provision_deploy_beacon_env` when a prod-tier env exists (rotates key if needed); refreshes harness/tracker/strategy, manifest credential-env fields, API build script, and Cursor dev-loop artifacts; never loses `.fireweave/changelog/`. **`--remove`** reads `installedInto[]` and reverses precisely (rule, hooks, hook scripts, agent links, harness wiring recorded in `installedInto`) in one command.
+**`--reinit`** re-detects agent/language **and re-enumerates environments** (regenerates the env→tier profile map / harness `FW_ENV_PROFILES` from `list_project_environments`); re-resolves the prod-tier capability bindings; **always re-runs** `provision_deploy_beacon_env` when a prod-tier env exists (rotates key if needed); refreshes harness/tracker/strategy, manifest credential-env fields, API build script, **and the dev-loop artifacts for every installed agent — Cursor (rule/hooks) AND Claude Code (`CLAUDE.md` block + `.claude/hooks/rollout-intent-gate.sh` + `.claude/settings.json` wiring)**. Reinit MUST re-create a missing/ignored Claude hook script and re-assert the `CLAUDE.md` block (do not skip on "settings entry already present" — verify the script file itself exists and is executable). Never loses `.fireweave/changelog/`. **`--remove`** reads `installedInto[]` and reverses precisely (rule, hooks, hook scripts, agent links, harness wiring recorded in `installedInto`) in one command.
 
 Every clarification uses `ask_followup_question`.
 
@@ -246,6 +247,36 @@ Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
 
 ---
 
+## CLAUDE.md rollout-ready block (Step 7c)
+
+Claude Code has no `alwaysApply` rule file — `CLAUDE.md` is the only always-loaded surface, so the standing rule must live IN it as a full HARD ORDER (a one-line link under-triggers on large feature prompts, which is how a whole feature can get built with zero rollout-ready discipline until the user notices). Upsert this block near the top of `CLAUDE.md` (replace any prior one-line FireWeave pointer). Do not merely link `.fireweave/agent-instructions.md` — inline the order:
+
+```markdown
+## 🔴 FireWeave rollout-ready — HARD ORDER (this repo is initialised)
+
+This repo is FireWeave rollout-ready ("promote, not wrap"). For **every user-facing
+OR flag-gated OR behavior-changing** change — including internal/ops/observability
+wiring — the rollout-ready package comes **FIRST, while you write code**, never as a
+backfill after the feature is built. Backfill breaks promote-not-wrap and is forbidden.
+
+1. **FIRST** — create/update `.fireweave/rollout-ready/<feature>.json` (Manifest
+   contract in [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md)),
+   mint `chg_<ULID>` + `stmp_<ULID>`, and append the stamp to every surface `FW_STAMPS`.
+2. Gate the new behavior behind the harness OpenFeature provider and add
+   `// @fireweave-flag <key>` at each evaluation site **as you write it**.
+3. **BEFORE calling the task done** — run `use_mcp_tool(server_name="rollout-server", tool_name="assert_dev_checklist")`
+   `{ feature }` (PARK on any block) + `detect_rollout_ready` + `reconcile` phase `build`.
+4. Do **not** open a PR / declare done until `assert_dev_checklist.pass === true`.
+   Ship only via `/fireweave:safe-rollout-fast` (promotes; never wraps).
+
+If a request looks like feature work and you have NOT done step 1, stop and do it
+first. If you are unsure whether a change qualifies, it does — err toward wrapping.
+```
+
+The `🔴` and "HARD ORDER" framing are deliberate — they raise the block's salience above ordinary CLAUDE.md guidance so it survives a big, distracting feature prompt. Keep the "including internal/ops/observability wiring" clause: the most common miss is an agent deciding an ops/observability change "isn't a feature" and skipping the package.
+
+---
+
 ## MCP wiring (Step 7b) — Cursor plugin only
 
 When `.cursor/` exists (Cursor host):
@@ -380,7 +411,43 @@ Record `.cursor/hooks.json`, `.cursor/hooks/fireweave-rollout-session.sh`, `.cur
 
 ## Claude Code hook (Step 8, when `.claude/` exists)
 
-Write `.claude/hooks/rollout-intent-gate.sh` (executable) that prints the same dev-checklist reminder when `rolloutReady.initialized` and the user prompt matches feature-intent keywords (`add`, `implement`, `feature`, `fix`, `ship`). Wire in `.claude/settings.json` hooks for `UserPromptSubmit` and `SessionStart` if not already present. Record paths in `installedInto[]`.
+Two artifacts, both **required and committed** (this is symmetric with the Cursor Step 7b/8 pair — Claude Code is NOT a second-class host):
+
+**1. The hook script** — `.claude/hooks/rollout-intent-gate.sh` (executable, `chmod +x`). It MUST:
+- Emit Claude Code's injection JSON — `{ "hookSpecificOutput": { "hookEventName": <event>, "additionalContext": <reminder> } }` — a **bare `echo` is not reliably injected**; use the JSON form (mirror the guarded `PreToolUse` graphify hook already in `settings.json`).
+- Fire on **SessionStart** (empty prompt → surface the standing reminder unconditionally) and **UserPromptSubmit** (narrow to feature-intent keywords: `add|implement|feature|feat|fix|ship|build|wrap|change|refactor|rollout|flag`).
+- Be **fail-open** — `set -uo pipefail` (not `-e`), guard every `node`/`cd`, and `exit 0` on any error. A missing dependency must never block a prompt.
+- Read `.fireweave/project.json` → `rolloutReady.initialized`; no-op when not initialised.
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+root="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)" || exit 0
+proj="$root/.fireweave/project.json"
+[[ -f "$proj" ]] || exit 0
+initialized="$(node -e "try{const j=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(j.rolloutReady?.initialized?'yes':'no')}catch{process.stdout.write('no')}" "$proj" 2>/dev/null)" || exit 0
+[[ "$initialized" == "yes" ]] || exit 0
+prompt="${1:-${CLAUDE_USER_PROMPT:-}}"
+msg="FireWeave rollout-ready repo (promote-not-wrap): for every user-facing, flag-gated, or behavior-changing task the rollout-ready package comes FIRST — create .fireweave/rollout-ready/<feature>.json + mint chg_/stmp_ + append stamp to FW_STAMPS, add // @fireweave-flag <key> as you code, then assert_dev_checklist + reconcile(build) before done. No backfill. Ship via /fireweave:safe-rollout-fast. See .fireweave/agent-instructions.md."
+if [[ -n "$prompt" ]] && ! echo "$prompt" | grep -qiE '\b(add|implement|feature|feat|fix|ship|build|wrap|change|refactor|rollout|flag)\b'; then exit 0; fi
+node -e "console.log(JSON.stringify({hookSpecificOutput:{hookEventName:process.argv[2]||'UserPromptSubmit',additionalContext:process.argv[1]}}))" "$msg" "${HOOK_EVENT:-}" 2>/dev/null || printf '%s\n' "$msg"
+exit 0
+```
+
+**2. The settings wiring** — merge (never replace) into `.claude/settings.json`. Use a **fail-open guarded command** so a missing script cannot error the hook (this is the fix for the `rollout-intent-gate.sh: No such file or directory` non-blocking error that silently kills the reminder):
+
+```json
+"SessionStart": [
+  { "hooks": [ { "type": "command",
+    "command": "[ -f .claude/hooks/rollout-intent-gate.sh ] && HOOK_EVENT=SessionStart bash .claude/hooks/rollout-intent-gate.sh || true" } ] }
+],
+"UserPromptSubmit": [
+  { "hooks": [ { "type": "command",
+    "command": "[ -f .claude/hooks/rollout-intent-gate.sh ] && HOOK_EVENT=UserPromptSubmit bash .claude/hooks/rollout-intent-gate.sh || true" } ] }
+]
+```
+
+Record `.claude/hooks/rollout-intent-gate.sh` and `.claude/settings.json` in `installedInto[]`. The hook is a **backstop** that re-asserts the reminder each turn; the always-loaded `CLAUDE.md` block (Step 7c) is the primary standing surface. Claude Code needs BOTH — the hook is execution-dependent and can drift; the `CLAUDE.md` block is plain text that always loads.
 
 ---
 

@@ -17,13 +17,28 @@ import {
 import posthog from 'posthog-js';
 import type { Provider } from '@openfeature/web-sdk';
 
+/** True after `posthog.init` in this tab (prod-tier connected path). */
+let posthogBrowserReady = false;
+
+/** Whether the browser PostHog singleton was initialized for this page load. */
+export function isPostHogBrowserClientReady(): boolean {
+  return posthogBrowserReady;
+}
+
 /** PROD: the connected PostHog web provider over the build-baked public key. */
 export function makeConnectedVendorProvider(): Provider {
   // PUBLIC_* env is inlined into the browser bundle at build time.
   const creds = resolvePostHogWebCredentials(
     import.meta.env as Record<string, string | undefined>
   );
-  posthog.init(creds.apiKey, { api_host: creds.host });
+  posthog.init(creds.apiKey, {
+    api_host: creds.host,
+    // Persons only after identify(userId) — stops anonymous UUID spam that
+    // breaks sticky % rollout bucketing. Wire auth → bindPostHogUser(user).
+    person_profiles: 'identified_only',
+    persistence: 'localStorage+cookie',
+  });
+  posthogBrowserReady = true;
   return makePostHogWebProvider({ client: posthog, posthogProjectId: creds.posthogProjectId });
 }
 
