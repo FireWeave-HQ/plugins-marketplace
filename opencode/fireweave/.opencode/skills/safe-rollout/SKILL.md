@@ -28,6 +28,21 @@ state machine treats them as one unit.
 **When NOT to use multiple flags**: independent experiments. Use separate
 rollouts so they can be paused/rolled back independently.
 
+### Initialised repos — schema-2 manifests + stamp policy
+
+When this repo is initialised and its `.fireweave/project.json` carries
+`surfaces[]` (the per-surface registry), any rollout-ready manifest this wrap
+emits or updates MUST be written as **schema 2**: one `surfaces[]` entry per
+touched surface (each carrying its own `stampId`, `wrapPoints`, `harness`, and
+`telemetry.metrics`; `flags` and the cohort `context`/`telemetry.dimensions`
+stay one-per-change at top level). Apply the **stamp policy** when minting the
+`stmp_` id(s): use a **per-surface stamp** (append each stamp ONLY to its own
+surface's `FW_STAMPS`) while ANY expected surface's harness is still legacy
+(not surface-aware) OR the change spans projects; a single **shared stamp** is
+allowed only when the change is single-project AND every participating surface's
+harness is surface-aware. A repo whose `project.json` has no `surfaces[]` (flat
+legacy binding) keeps writing schema-1 single-harness manifests.
+
 ## Tool surfaces
 
 This skill works across **two** surfaces:
