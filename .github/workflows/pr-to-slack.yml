@@ -1,0 +1,72 @@
+name: PR to Slack
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Slack webhook secret
+        run: |
+          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "::error::Missing GitHub secret SLACK_WEBHOOK_URL"
+            exit 1
+          fi
+
+      - name: Build Slack message
+        id: slack
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const title = pr.title || "(no title)";
+            const url = pr.html_url;
+            const author = pr.user?.login || "unknown";
+            const base = pr.base?.ref || "unknown";
+            const head = pr.head?.ref || "unknown";
+            const number = pr.number;
+
+            const text =
+              `New PR opened: *${title}* by @${author}\n` +
+              `${url}\n` +
+              `Base: \`${base}\` Head: \`${head}\`\n` +
+              `Repo: \`${owner}/${repo}\` #${number}`;
+
+            const payload = {
+              channel: "#fireweave-prs",
+              text,
+            };
+
+            core.setOutput("payload", JSON.stringify(payload));
+
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_PAYLOAD: ${{ steps.slack.outputs.payload }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+
+          url = os.environ["SLACK_WEBHOOK_URL"]
+          payload = json.loads(os.environ["SLACK_PAYLOAD"])
+
+          data = json.dumps(payload).encode("utf-8")
+          req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(req) as resp:
+            _ = resp.read()
+
+          print("Slack notification sent")
+          PY
