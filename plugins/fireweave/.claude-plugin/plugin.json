@@ -1,6 +1,6 @@
 {
   "name": "fireweave",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "description": "Skills for working with FireweaveAI as a customer — run safe feature-flag rollouts, manage integrations, and inspect the platform from your AI coding tool.",
   "author": {
     "name": "FireweaveAI",

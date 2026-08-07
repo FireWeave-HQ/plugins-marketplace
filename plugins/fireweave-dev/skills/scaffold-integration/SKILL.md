@@ -2,7 +2,7 @@
 name: scaffold-integration
 description: Scaffold a new FireweaveAI integration package. Trigger when the user says "create a new integration", "add a Fireweave integration for X", "scaffold an integration plugin", or asks to start building a connector for an external tool. Generates the package directory, manifest, Dockerfile, and entry point matching the conventions in packages/integration-sdk.
 activation:
-  globs: ["packages/**/*", "**/integration-*/**"]
+  globs: ['packages/**/*', '**/integration-*/**']
   manual: false
 aliases:
   cursor: fireweave-scaffold-integration

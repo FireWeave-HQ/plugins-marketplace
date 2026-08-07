@@ -4,7 +4,7 @@ This plugin gives your AI coding tool (Claude Code, Cursor, Cline, Codex)
 deterministic access to FireweaveAI: create tasks, wrap code in safe
 rollouts, manage feature flags, inspect platform state.
 
-The plugin is *deterministic by design*: a Claude Code hook
+The plugin is _deterministic by design_: a Claude Code hook
 (`fw-auth-gate.sh`) intercepts every Fireweave skill invocation, runs
 `fw status`, and triggers an inline OAuth device flow if you're not
 authenticated. The LLM never sees credentials or makes auth decisions.

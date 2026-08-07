@@ -1,9 +1,10 @@
 """fw_providers.py — scaffolded by ``/fireweave:initialise`` (PYTHON surface).
 
 The DEV provider is the OpenFeature in-memory provider (flag reads return the
-code default). The PROD provider — the connected PostHog OpenFeature provider —
-is DEFERRED for the python surface (Phase 1c): per ADR-017 FireWeave authors it
-over the official ``posthog`` SDK; until it ships,
+code default). The PROD provider — Fireweave remote via the Python
+``fireweave`` SDK (``FireweaveRemoteAdapter`` → fw-server
+``/v1/flags/evaluate``) — is DEFERRED for the python surface until the
+published package is wired into initialise. Until then,
 ``make_connected_vendor_provider`` raises loudly rather than fake a prod path.
 
 ``fw eject`` deletes this file — call-sites read raw OpenFeature, so removing
@@ -19,21 +20,45 @@ from openfeature.provider.in_memory_provider import InMemoryProvider
 def make_dev_provider() -> AbstractProvider:
     """DEV: OpenFeature in-memory provider — reads return the code default (echo).
 
-    Swapped for the connected PostHog provider when python prod support ships
-    (Phase 1c); the dev branch never reaches a vendor.
+    Swapped for the Fireweave remote provider when python prod support ships;
+    the dev branch never reaches a vendor.
     """
     return InMemoryProvider({})
 
 
 def make_connected_vendor_provider() -> AbstractProvider:
-    """PROD: DEFERRED (Phase 1c).
+    """PROD: DEFERRED.
 
-    The connected PostHog OpenFeature provider for python is not built yet
-    (ADR-017: FireWeave authors it over the official ``posthog`` SDK). Raising
-    here keeps the prod branch honestly unbindable — ``verify_prod_path`` skips
+    Wire ``fireweave.FireweaveRemoteAdapter`` + ``FireweaveProvider``
+    (https://github.com/FireWeave-HQ/fireweave-sdk) with ``FW_API_URL`` +
+    ``FW_PROJECT_API_KEY`` when python prod scaffolding lands. Raising here
+    keeps the prod branch honestly unbindable — ``verify_prod_path`` skips
     python as a recorded gap, never a false green.
     """
     raise NotImplementedError(
         "FireWeave python prod flag provider is deferred — build and test "
-        "locally; prod ramp support lands in a later feature."
+        "locally with the fireweave SDK remote adapter; prod ramp support "
+        "lands in a later feature."
     )
+
+
+def register_fw_target(
+    targeting_key: str,
+    properties: dict[str, object] | None = None,
+    kind: str = "user",
+) -> bool:
+    """Register a user or device for DURABLE targeting: DEFERRED on python.
+
+    Rules match on two kinds of property: DURABLE ones registered once at login
+    (plan, beta membership, region, device model) and PER-REQUEST ones carried
+    in the evaluation context. A rule targeting a property that is never
+    registered AND never sent matches nobody, silently.
+
+    Python has no prod flag path yet (see ``make_connected_vendor_provider``),
+    so this returns ``False`` — "not registered" — rather than pretending. It
+    never raises: registration belongs in sign-in paths, where an analytics call
+    must not break login. Wire it to ``POST /v1/targets/register`` when the
+    python prod surface lands.
+    """
+    del targeting_key, properties, kind  # deferred: no prod transport yet
+    return False
