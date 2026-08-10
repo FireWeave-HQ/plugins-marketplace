@@ -4,7 +4,7 @@ Skills for working with FireweaveAI directly from your AI coding tool.
 
 ## Skills
 
-- **safe-rollout** — Wrap new code behind one or more Fireweave-managed feature flags with cohort-keyed telemetry, then register a Restate-backed controller that ramps the rollout safely (auto-promote / rollback). Invoke via `/fireweave:safe-rollout`.
+- **safe-rollout** — Ship a change that is already rollout-ready: verify the generated prod branch (no provider swap, no re-wrapping), register the rollout, and ramp it on the deploy-liveness gate with auto-promote / rollback. Requires a repo initialised via `/fireweave:initialise`. Invoke via `/fireweave:safe-rollout`.
 
 ## Install
 

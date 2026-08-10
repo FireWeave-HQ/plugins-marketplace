@@ -18,17 +18,18 @@
  * A rule targeting a property that is never registered AND never sent matches
  * nobody, silently. Register the durable facts at sign-in.
  *
- * `fw eject` DELETES this file — the call-sites read raw OpenFeature, so removing
- * FireWeave leaves no app-code lock-in.
+ * Ejecting strips this file's imports and leaves the call-sites on raw
+ * OpenFeature, so removing FireWeave leaves no app-code lock-in. The file itself
+ * is yours to delete once nothing imports it.
  */
 import {
   FireweaveProvider,
   FireweaveRemoteAdapter,
   FireweaveRuntime,
+  makeFireweaveLocalProvider,
   type RegisterTargetOptions,
   type RegisterTargetResult,
 } from '@fireweaveai/sdk';
-import { FireweaveLocalProvider } from '@fireweaveai/deploy-sdk/flags';
 import type { Provider } from '@openfeature/server-sdk';
 
 /** Retained so `registerFwTarget` reaches the same runtime the provider uses. */
@@ -74,17 +75,20 @@ export async function registerFwTarget(
 }
 
 /**
- * DEV: FireWeave local in-memory provider (FW_DUMP capture + devFlags).
+ * DEV: FireWeave local in-memory provider (FW_DUMP capture + devFlags), served
+ * through the same `FireweaveRuntime` as prod — dev and prod share lifecycle
+ * gating and context canonicalization, so the harness cannot skew between
+ * tiers.
  *
  * Call-site / manifest defaults stay `false` (RAMP-1). To dogfood a flag ON
  * locally, list it here — never `fw.flag(key, true)` (that same `true` is the
  * prod fallback when the provider flag is missing).
  *
- *   return new FireweaveLocalProvider({
+ *   return makeFireweaveLocalProvider({
  *     echo: true,
  *     devFlags: { '<feature-slug>': true },
  *   });
  */
 export function makeDevProvider(): Provider {
-  return new FireweaveLocalProvider({ echo: true });
+  return makeFireweaveLocalProvider({ echo: true });
 }

@@ -7,8 +7,9 @@ code default). The PROD provider — Fireweave remote via the Python
 published package is wired into initialise. Until then,
 ``make_connected_vendor_provider`` raises loudly rather than fake a prod path.
 
-``fw eject`` deletes this file — call-sites read raw OpenFeature, so removing
-FireWeave leaves no app-code lock-in.
+Ejecting strips this file's imports and leaves the call-sites on raw OpenFeature,
+so removing FireWeave leaves no app-code lock-in. The file itself is yours to
+delete once nothing imports it.
 """
 
 from __future__ import annotations

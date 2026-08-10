@@ -28,7 +28,8 @@ from .fw_providers import make_connected_vendor_provider, make_dev_provider
 from .fw_tracker import FW_STAMPS
 
 # Surface participation (surface-ID routing) — dev-only tracking on this branch.
-# ``/fireweave:initialise`` mints one ``sfc_<ULID>`` per scaffolded surface; its
+# fw-server mints one ``sfc_<ULID>`` per surface and ``/fireweave:initialise``
+# RECORDS it here (Step 3f, ``fw repo declare-surfaces``) -- never invent one; its
 # ``stamps`` are THIS surface's ``FW_STAMPS``. The python deploy SDK (Phase 1b)
 # will send ``FW_SURFACES`` on the boot beacon (alongside the deduped ``stamps``
 # union). Tracked but NOT transmitted yet — no prod-path work on this branch.

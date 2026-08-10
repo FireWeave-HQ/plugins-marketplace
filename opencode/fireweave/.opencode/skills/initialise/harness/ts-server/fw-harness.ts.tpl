@@ -3,7 +3,7 @@
  *
  * The "promote, not wrap" harness (D26): BOTH branches are present and the
  * RUNNING ENVIRONMENT — resolved by NAME, not a bare boolean — selects which one
- * is live. Nothing is swapped at promotion — `safe-rollout-fast` runs
+ * is live. Nothing is swapped at promotion — `safe-rollout` runs
  * `verify_prod_path` and ramps via `flag.control`; it never mutates this file.
  *
  * Environment-keyed model (D26): `FW_ENV_PROFILES` maps every environment the
@@ -18,8 +18,10 @@
  * (§11.6) so the provider + OTel + the stamp beacon are live before any flag
  * read or instrumented path runs. `verify_prod_path` asserts exactly that.
  *
- * `fw eject` deletes this file + fw-providers.ts and rewrites the optional
- * `fw.flag(...)` sugar to raw `await OpenFeature.getClient().getBooleanValue(...)`.
+ * Ejecting rewrites the optional `fw.flag(...)` sugar to raw
+ * `await OpenFeature.getClient().getBooleanValue(...)` and strips the imports of
+ * this file and fw-providers.ts. It does not delete either file — remove them
+ * yourself once nothing imports them.
  */
 import { OpenFeature } from '@openfeature/server-sdk';
 import {
@@ -37,8 +39,10 @@ import { FW_STAMPS } from './fw-tracker';
 
 // Surface participation (surface-ID routing). The generated `sfc_<ULID>` claims
 // THIS surface's identity; its `stamps` are THIS surface's `FW_STAMPS`.
-// `/fireweave:initialise` mints ONE `sfc_` id per scaffolded surface (never
-// reuse an id across surfaces) and regenerates this on `--reinit`. It is passed
+// fw-server mints ONE `sfc_` id per surface and `/fireweave:initialise`
+// RECORDS it here (Step 3f, `fw repo declare-surfaces`); never invent one and
+// never reuse one across surfaces. Regenerated on `--reinit` from the same
+// declaration. It is passed
 // to `initFwAttestation` as `surfaces` so new fw-servers attribute deploy
 // liveness PER SURFACE, while `stamps: FW_STAMPS` stays the deduped union for
 // older servers (dual-emit — the SDK folds surface stamps into that union).
@@ -104,8 +108,21 @@ export async function initFwHarness(): Promise<void> {
   //    to the vendor (traces + logs to PostHog; metrics to a metrics-capable dest).
   initFwTelemetry(prod ? 'rollout' : 'dev', {
     serviceName: 'fireweave-app',
-    // In prod the initialise step fills `signals` from the observability
-    // connection descriptor { vendor, otlpEndpoint, credentialEnvName }.
+    // In prod, initialise fills `signals` when an observability vendor is BOUND.
+    // The bound capability names the VENDOR only — it is FireWeave's query leg
+    // (how fw-server reads guardrail metrics back). The export leg is yours:
+    // endpoint + credential come from env vars you set in the deploy target,
+    // exactly like FW_ATTEST_URL / FW_PROJECT_API_KEY. There is no
+    // `otlpEndpoint` in any capability descriptor — do not wait for one (FIR-354).
+    //
+    // Shape (OpenObserve; take each vendor's contract from its own docs):
+    //   signals: {
+    //     traces:  { endpoint: `${OO_URL}/v1/traces`,  headers: { Authorization: OO_AUTH } },
+    //     logs:    { endpoint: `${OO_URL}/v1/logs`,    headers: { Authorization: OO_AUTH } },
+    //     metrics: { endpoint: `${OO_URL}/v1/metrics`, headers: { Authorization: OO_AUTH } },
+    //   }
+    // where OO_URL = `https://<host>/api/<org>` (NO trailing slash) and
+    // OO_AUTH = `Basic ${base64(email:password)}`.
   });
   registerFwFlagHooks();
 

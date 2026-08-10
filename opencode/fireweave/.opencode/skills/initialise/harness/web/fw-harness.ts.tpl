@@ -12,8 +12,10 @@
  * required (it stays an optional override only).
  *
  * `initFwHarness()` MUST be awaited first in the app's bootstrap, before the
- * first render that reads a flag. `fw eject` deletes this file + fw-providers.ts
- * and rewrites `fw.flag(...)` to raw sync `OpenFeature.getClient().getBooleanValue(...)`.
+ * first render that reads a flag. Ejecting rewrites `fw.flag(...)` to raw sync
+ * `OpenFeature.getClient().getBooleanValue(...)` and strips the imports of this
+ * file and fw-providers.ts; it does not delete either — remove them yourself
+ * once nothing imports them.
  */
 import { OpenFeature } from '@openfeature/web-sdk';
 import {
@@ -29,8 +31,10 @@ import { FW_STAMPS } from './fw-tracker';
 
 // Surface participation (surface-ID routing). The generated `sfc_<ULID>` claims
 // THIS surface's identity; its `stamps` are THIS surface's `FW_STAMPS`.
-// `/fireweave:initialise` mints ONE `sfc_` id per scaffolded surface (never
-// reuse an id across surfaces) and regenerates this on `--reinit`. It is passed
+// fw-server mints ONE `sfc_` id per surface and `/fireweave:initialise`
+// RECORDS it here (Step 3f, `fw repo declare-surfaces`); never invent one and
+// never reuse one across surfaces. Regenerated on `--reinit` from the same
+// declaration. It is passed
 // to `initFwAttestation` as `surfaces` so new fw-servers attribute deploy
 // liveness PER SURFACE, while `stamps: FW_STAMPS` stays the deduped union for
 // older servers (dual-emit — the SDK folds surface stamps into that union).

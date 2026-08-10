@@ -75,12 +75,43 @@ const runtime = new FireweaveRuntime(adapter);
 await OpenFeature.setProviderAndWait(new FireweaveProvider(runtime));
 ```
 
+Web (browser) — control points come from `@fireweaveai/web-sdk`; credential
+resolution stays on deploy-sdk (`PUBLIC_FW_*` is a build convention, not a
+wire concern):
+
+```ts
+import {
+  FireweaveRemoteWebAdapter,
+  FireweaveWebProvider,
+  FireweaveWebRuntime,
+} from '@fireweaveai/web-sdk';
+import { resolveFireweaveWebCredentials } from '@fireweaveai/deploy-sdk/flags/web';
+
+const creds = resolveFireweaveWebCredentials(import.meta.env);
+const runtime = new FireweaveWebRuntime(new FireweaveRemoteWebAdapter(creds), {
+  globalContext: { targetingKey: 'anonymous' },
+});
+await OpenFeature.setProviderAndWait(new FireweaveWebProvider(runtime));
+```
+
+Both migration paths — including `posthog.identify` → `client.identify` (one
+call that registers durable properties AND re-prefetches) and the local dev
+providers — are documented in the SDK repo's `docs/migration.md` ("From
+`@fireweaveai/deploy-sdk`"); reference it rather than restating it here.
+
 The app must end up holding **no PostHog key**. Flags are evaluated by
 fw-server, which holds the managed credentials. Remove the now-unused
 `POSTHOG_*` env vars from the app's config and deployment.
 
-Reference implementation: `apps/api/src/fireweave/fw-providers.ts` and
-`apps/web/src/fireweave/` in the pulse-folio repo.
+Reference implementation — read the **shipped templates**, not another customer's
+repo. They live in the initialise skill's own directory, beside its `SKILL.md`:
+`harness/ts-server/fw-providers.ts.tpl` (server) and
+`harness/web/fw-providers.ts.tpl` (browser). Resolve that path relative to the
+initialise skill's directory in this same bundle — `<dir of this SKILL.md>/../`
+plus whatever this host names it (`initialise`, `fw-initialise` on Cursor,
+`fw_initialise` on Codex). `apps/api/src/fireweave/fw-providers.ts` in the
+pulse-folio repo is one instance of that template, not the source of truth, and
+is not readable from here.
 
 ### 3b. Identity — the part that is easy to get wrong
 
@@ -129,17 +160,56 @@ not migrated, and reporting it as such makes the project page lie.
 
 ## 5. Report
 
-```
-POST {FW_API_URL}/v1/projects/{projectId}/harness-migration
-Authorization: Bearer {FW_PROJECT_API_KEY}
+Send the report **over the CLI profile**, not the beacon key.
 
-{
-  "status": "migrated" | "partial" | "failed",
-  "sdkVersion": "<@fireweaveai/sdk version installed>",
-  "surfaces": ["server", "web"],
-  "notes": "<what was left behind and why, if anything>"
-}
+`{projectId}` comes from the repo's FireWeave pointer — read `projectId` from
+`.fireweave/project.json`, or call `mcp__rollout_server__select_project` if the
+pointer is absent. Do not invent it and do not use the project _name_.
+
 ```
+fw api POST /v1/projects/{projectId}/harness-migration --body '{
+  "status": "migrated",
+  "sdkVersion": "0.2.1",
+  "surfaces": ["server", "web"],
+  "notes": "python surface still reads PostHog directly"
+}'
+```
+
+**Substitute every value before sending.** The fields above are a worked
+example, not a template to paste: `sdkVersion` must be the version actually in
+`package.json`, `surfaces` the surfaces you actually rewrote, `notes` real prose
+or omitted entirely. The server accepts any string, so a pasted placeholder is
+stored verbatim and rendered on the project page — `sdkVersion` appears in the
+migration badge exactly as sent. Omit `notes` rather than sending filler.
+
+`status` is one of `migrated` | `partial` | `failed`.
+
+**Do not send a raw `Authorization: Bearer {FW_PROJECT_API_KEY}` POST.**
+`FW_PROJECT_API_KEY` is the `fw_ingest_pub_*` deploy-attestation key; this
+endpoint authenticates on the org plane (CLI access tokens and `fw_org_*` API
+keys), so a key-bearing POST 401s. `fw api` carries the CLI profile, which is
+the credential this route accepts — and the one plane a repo always has,
+including a dev-only project that never gets a beacon key at all.
+
+**Precondition — check before you send.** Unlike `initialise`, this skill has no
+Step 0 that already gated on auth, so establish both here:
+
+- `fw --version` resolves. If not, the report cannot be sent from this session.
+- `fw api GET /v1/projects/{projectId}` returns 2xx. This settles the profile,
+  the org binding, and `{projectId}` in one call.
+
+If either fails, **do not guess a credential and do not fall back to the beacon
+key** — the endpoint would reject it. Report the harness as migrated in the
+session summary, name the project page as still-warning, and say which of the
+two checks failed so the operator can run `fw login` / `fw profile use` and
+re-send.
+
+On a failure, say so in the session summary and name the project page as
+still-warning. Do not PARK: the harness itself is migrated and committed — an
+unreported success is a stale page, not a broken repo. Note that a missing or
+ambiguous profile fails **before** any HTTP call, so `fw api` prints an error
+envelope with no status code — treat "no 2xx observed" as the failure
+condition, not "a non-2xx was returned".
 
 Status honestly:
 

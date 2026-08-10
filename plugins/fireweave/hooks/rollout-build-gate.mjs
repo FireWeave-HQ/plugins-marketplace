@@ -70,7 +70,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '../..');
 const projPath = join(root, '.fireweave', 'project.json');
-const manifestDir = join(root, '.fireweave', 'rollout-ready');
+// There is deliberately no `.fireweave/rollout-ready/` path here. Phase 6 gave
+// this gate ONE manifest source — the projection (cache ∪ queue) — for every
+// repo, whatever shape its pointer is. The dead const that used to sit here was
+// the last thing suggesting otherwise, and the skill's own spec table had copied
+// that suggestion into an instruction.
 const cacheDir = join(root, '.fireweave', '.cache');
 const queueDir = join(root, '.fireweave', '.queue');
 
@@ -301,9 +305,21 @@ function fileChecksum(text) {
 }
 
 /**
- * Scan scope, from whichever record owns it: `rolloutReady` in a legacy repo,
- * the cached `repo_state` row in a migrated one. The FIELDS are the same
- * (`sourceRoots` / `scanExclude`); only their home moved.
+ * Scan scope, from the cached `repo_state` row and nowhere else.
+ *
+ * This function MIRRORS `resolveRolloutScanOptions` in
+ * `@fireweaveai/deploy-sdk/flags` rather than importing it — this file ships
+ * standalone into a customer repo and cannot resolve `@fireweaveai/*`. The two
+ * must therefore be changed together: if the gate and the SDK disagree about
+ * which tree gets scanned, the gate is checking a different repo than the
+ * scanner reports on.
+ *
+ * Both used to read `rolloutReady` out of the committed `.fireweave/project.json`
+ * as well. They no longer do — scan scope is a `repo_state` field, and the
+ * projection is where this worktree sees it. A repo with no projection falls
+ * through to the generic excludes and an empty `sourceRoots`, i.e. scans the
+ * WHOLE repo: too wide reports extra orphan anchors, which somebody sees; too
+ * narrow reports nothing, which is indistinguishable from a clean repo.
  */
 function scanConfigFrom(source) {
   const sourceRoots = Array.isArray(source?.sourceRoots)
@@ -649,11 +665,9 @@ async function main() {
     return emit(findings);
   }
 
-  // A POSITIVE fact, never the absence of one — and field presence, never
-  // `version` (PROJ-3). See the module header.
-
+  /** Scan scope. Set from the projection once the cache validates — see ROW 3. */
   let scan;
-  /** flag key → `{ origin: 'tracked' | 'cache' | 'queue', feature, entryId?, queuedAt? }`. */
+  /** flag key → `{ origin: 'cache' | 'queue', feature, entryId?, queuedAt? }`. */
   const manifestFlags = new Map();
   /** `harness.surface` values the repo's own manifests declare — the scan vocabulary's input. */
   const declaredSurfaces = new Set();
@@ -727,7 +741,11 @@ async function main() {
       collectManifestSurfaces(row.manifest, declaredSurfaces);
       for (const f of row.flags) {
         if (f?.key)
-          manifestFlags.set(f.key, { origin: 'cache', feature: row.feature });
+          manifestFlags.set(f.key, {
+            origin: 'cache',
+            feature: row.feature,
+            flag: f,
+          });
       }
     }
     for (const e of latestQueuedByFeature.values()) {
@@ -739,6 +757,7 @@ async function main() {
             feature: e.feature,
             entryId: e.id,
             queuedAt: e.queuedAt,
+            flag: f,
           });
         }
       }
@@ -812,6 +831,52 @@ async function main() {
             : ''),
       });
     }
+  }
+
+  // RAMP-1 — the feature stays OFF until the ramp turns it on.
+  //
+  // This rule lives in `assert_dev_checklist` too, and it has to live here as
+  // well: `assert_dev_checklist` is an MCP tool an agent chooses to call, while
+  // this gate is what the Cursor and Claude stop hooks actually run on every
+  // stop. A flag that ships `default: true` past a green stop hook is on at 100%
+  // before ramp step 1, and nothing in the hook path had ever looked.
+  //
+  // Scope, stated so the gap is not mistaken for coverage: this checks the
+  // DECLARED default only. The value actually served outside the ramp cohort is
+  // the second argument at the evaluation site, and resolving that needs the TS
+  // compiler API (`_verify-eval-site-safe-defaults.ts`) which this standalone
+  // `.mjs` cannot import. `assert_dev_checklist` remains the only gate that
+  // checks the eval site.
+  for (const [declared, origin] of manifestFlags) {
+    const flag = origin.flag;
+    if (!flag) continue;
+    // Non-false / non-null / non-string default ships the feature on before the
+    // first ramp step (`default: 1` is as bad as `true`; string defaults are
+    // multivariate variant keys and stay out). Mirrors assert_dev_checklist.
+    const onByDefault =
+      flag.default === true ||
+      (typeof flag.default === 'number' && flag.default !== 0);
+    if (!onByDefault) continue;
+    // A recorded exception is only legal with `default === true` (the manifest
+    // schema enforces it) and downgrades block → warn for an honest kill-switch.
+    const ex = flag.default === true ? flag.ramp1Exception : undefined;
+    findings.push(
+      ex
+        ? {
+            rule: 'ramp1-default',
+            severity: 'warn',
+            ...(origin.origin === 'queue' ? { unsynced: true } : {}),
+            message: `manifest flag '${declared}' ('${origin.feature}') has default true — recorded RAMP-1 exception (${ex.trackedBy}: ${ex.reason})`,
+            fix: `Remediate under ${ex.trackedBy} (owner ${ex.owner}): create the provider flag at 100% ON → verify serving → set eval-site + flags[].default to false, move local ON to makeDevProvider() devFlags, remove ramp1Exception. Never flip code first.`,
+          }
+        : {
+            rule: 'ramp1-default',
+            severity: 'block',
+            ...(origin.origin === 'queue' ? { unsynced: true } : {}),
+            message: `manifest flag '${declared}' ('${origin.feature}') has default ${JSON.stringify(flag.default)} — RAMP-1 requires the feature to stay off until ramp`,
+            fix: `Set flags[].default to false for '${declared}' via upsert_rollout_manifest. Local dogfood ON → that surface's makeDevProvider() devFlags: { '${declared}': true } — never fw.flag(key, true). Prod ON is the ramp.`,
+          }
+    );
   }
 
   return emit(findings);
