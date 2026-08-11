@@ -1,17 +1,24 @@
 """fw_harness.py — scaffolded by ``/fireweave:initialise`` (PYTHON surface).
 
-The "promote, not wrap" harness (D26): the RUNNING ENVIRONMENT — resolved by
-NAME, not a bare boolean — selects the branch via ``FW_ENV_PROFILES``.
-  dev  -> in-memory OpenFeature provider + OTel console exporter
-  prod -> DEFERRED for the python surface (Phase 1c): the connected PostHog
-          OpenFeature provider + direct OTLP + boot beacon are not built yet, so
-          this harness scaffolds DEV-only console wiring and NEVER fakes a prod
-          branch (``verify_prod_path`` skips python as a recorded gap, not a pass).
+The "promote, not wrap" harness (D26): BOTH branches are present and the RUNNING
+ENVIRONMENT — resolved by NAME, not a bare boolean — selects which one is live,
+via ``FW_ENV_PROFILES``.
+  dev  -> FireWeave local provider + OTel console exporter
+  prod -> FireWeave remote provider (fw-server ``/v1/flags/evaluate``)
+
+Nothing is swapped at promotion — ``safe-rollout`` ramps via ``flag.control`` and
+never mutates this file.
+
+BOOT BEACON: still deferred on this surface. There is no python deploy SDK, so
+there is nothing to send the stamp tree with. ``verify_prod_path`` reports that
+as a NAMED SKIP — a recorded gap, never a pass — and the flag path above is
+unaffected: flags and deploy attestation are independent.
 
 ``init_fw_harness()`` MUST be called as the FIRST statement in the app entrypoint
 (top of ``__main__`` / the ASGI/WSGI app factory) so the provider + telemetry are
-live before any flag read. ``is_prod()`` is retained as the tier fallback + the
-token a future python ``verify_prod_path`` greps for.
+live before any flag read. It is SYNCHRONOUS — do not await it. ``is_prod()`` is
+retained as the unknown-environment tier fallback and the token
+``verify_prod_path`` greps for.
 """
 
 from __future__ import annotations
@@ -109,26 +116,22 @@ def init_fw_harness() -> None:
             stacklevel=2,
         )
 
-    if prod:
-        # PROD is DEFERRED for the python surface (Phase 1c): no connected PostHog
-        # OpenFeature provider / direct OTLP / boot beacon yet. Scaffold DEV-only
-        # console wiring so the app still runs, and NEVER fake a prod branch.
-        warnings.warn(
-            "[fireweave] python prod rollout is deferred — running DEV-only console "
-            "wiring. Build and test locally; prod ramp support lands in a later feature.",
-            stacklevel=2,
-        )
-        # Touch the deferred prod provider factory so it is not dead code; it
-        # raises if actually invoked (see fw_providers.make_connected_vendor_provider).
-        _ = make_connected_vendor_provider
+    # Flags: prod-tier -> connected vendor provider (reads THIS environment's
+    # credentials from os.environ); dev-tier -> FireWeave local provider. Both
+    # come from the same SDK and the same runtime, so the tiers cannot skew.
+    api.set_provider(
+        make_connected_vendor_provider() if prod else make_dev_provider()
+    )
 
-    # DEV wiring (used for every tier until python prod support ships):
-    api.set_provider(make_dev_provider())
+    # Telemetry: console on both tiers for now. Direct OTLP export lands with the
+    # python deploy SDK; emitting a half-wired exporter would be worse than
+    # console, because it looks configured and silently drops every span.
     _init_console_telemetry("fireweave-app")
 
-    # Boot beacon: DEFERRED (Phase 1b). The python deploy SDK provides
-    # ``init_fw_attestation``; until then the stamp tree and its per-surface
-    # participation are tracked but not sent.
+    # Boot beacon: DEFERRED — there is no python deploy SDK to send it with.
+    # The stamp tree and its per-surface participation are tracked here so the
+    # anchors stay honest; verify_prod_path records the missing beacon as a
+    # named skip rather than a pass.
     _ = FW_STAMPS
     _ = FW_SURFACES
 

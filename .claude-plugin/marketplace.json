@@ -1,7 +1,7 @@
 {
   "name": "fireweave",
   "description": "Official FireweaveAI skills marketplace. Plugins for Fireweave customers and integration authors.",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "owner": {
     "name": "FireweaveAI",
     "url": "https://fireweave.ai"
