@@ -10,12 +10,12 @@
  * project declares in FireWeave (`list_project_environments`) — the default
  * `development` plus `staging`, `production`, … — to a TIER. `dev`-tier binds the
  * in-memory FireWeave local provider + console exporters; `prod`-tier binds the
- * connected vendor's real provider + direct OTLP + the boot beacon. `staging` is a
+ * connected vendor's real provider + direct OTLP. `staging` is a
  * FIRST-CLASS prod-tier environment — it is NEVER silently folded into dev or prod.
  * `/fireweave:initialise --reinit` regenerates this map from the environment list.
  *
  * `initFwHarness()` MUST be the FIRST awaited statement in the app entrypoint
- * (§11.6) so the provider + OTel + the stamp beacon are live before any flag
+ * (§11.6) so the provider + OTel are live before any flag
  * read or instrumented path runs. `verify_prod_path` asserts exactly that.
  *
  * Ejecting rewrites the optional `fw.flag(...)` sugar to raw
@@ -29,24 +29,10 @@ import {
   initFwTelemetry,
   registerFwFlagHooks,
 } from '@fireweaveai/deploy-sdk/flags';
-import { initFwAttestation } from '@fireweaveai/deploy-sdk';
-import { resolveBootBeaconFromEnv } from '@fireweaveai/deploy-sdk/attest';
 import { makeConnectedVendorProvider, makeDevProvider } from './fw-providers';
-// Plain static value import — no glob/embed/build script. `FW_STAMPS` is the
-// generated const tree; it is USED (passed to initFwAttestation) so DCE can't
-// drop it (the "plain-import-ships" gate).
-import { FW_STAMPS } from './fw-tracker';
-
-// Surface participation (surface-ID routing). The generated `sfc_<ULID>` claims
-// THIS surface's identity; its `stamps` are THIS surface's `FW_STAMPS`.
-// fw-server mints ONE `sfc_` id per surface and `/fireweave:initialise`
-// RECORDS it here (Step 3f, `fw repo declare-surfaces`); never invent one and
-// never reuse one across surfaces. Regenerated on `--reinit` from the same
-// declaration. It is passed
-// to `initFwAttestation` as `surfaces` so new fw-servers attribute deploy
-// liveness PER SURFACE, while `stamps: FW_STAMPS` stays the deduped union for
-// older servers (dual-emit — the SDK folds surface stamps into that union).
-const FW_SURFACES = [{ surfaceId: 'sfc_REPLACE_ON_INIT', stamps: FW_STAMPS }];
+// The `fw-tracker/` const tree stays on disk as the committed stamp record —
+// `reconcile` and the dev-checklist gates read it from the repo, so it needs
+// no import here.
 
 type FwEnvTier = 'dev' | 'prod';
 
@@ -112,7 +98,7 @@ export async function initFwHarness(): Promise<void> {
     // The bound capability names the VENDOR only — it is FireWeave's query leg
     // (how fw-server reads guardrail metrics back). The export leg is yours:
     // endpoint + credential come from env vars you set in the deploy target,
-    // exactly like FW_ATTEST_URL / FW_PROJECT_API_KEY. There is no
+    // exactly like FW_API_URL / FW_PROJECT_API_KEY. There is no
     // `otlpEndpoint` in any capability descriptor — do not wait for one (FIR-354).
     //
     // Shape (OpenObserve; take each vendor's contract from its own docs):
@@ -130,15 +116,4 @@ export async function initFwHarness(): Promise<void> {
   //    credentials from process.env); dev-tier → FireWeave local provider.
   const provider = prod ? makeConnectedVendorProvider() : makeDevProvider();
   await OpenFeature.setProviderAndWait(provider);
-
-  // 3. Boot beacon: attest active change stamps to the customer's own fw-server.
-  //    The beacon is labelled with the harness-resolved environment NAME
-  //    (`fwEnvName`) — from THIS project's own env signal, no FireWeave-specific
-  //    FW_ENV required. Requires FW_ATTEST_URL + FW_PROJECT_API_KEY in the
-  //    prod-tier runtime env.
-  initFwAttestation({
-    stamps: FW_STAMPS,
-    surfaces: FW_SURFACES,
-    ...resolveBootBeaconFromEnv({ env: process.env, prod, environment: fwEnvName }),
-  });
 }

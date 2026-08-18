@@ -162,7 +162,7 @@ not migrated, and reporting it as such makes the project page lie.
 
 ## 5. Report
 
-Send the report **over the CLI profile**, not the beacon key.
+Send the report **over the CLI profile**, not the project API key.
 
 `{projectId}` comes from the repo's FireWeave pointer — read `projectId` from
 `.fireweave/project.json`, or call `use_mcp_tool(server_name="rollout-server", tool_name="select_project")` if the
@@ -173,7 +173,7 @@ fw api POST /v1/projects/{projectId}/harness-migration --body '{
   "status": "migrated",
   "sdkVersion": "0.2.1",
   "surfaces": ["server", "web"],
-  "notes": "python surface still reads PostHog directly"
+  "notes": "go surface still reads PostHog directly"
 }'
 ```
 
@@ -187,11 +187,12 @@ migration badge exactly as sent. Omit `notes` rather than sending filler.
 `status` is one of `migrated` | `partial` | `failed`.
 
 **Do not send a raw `Authorization: Bearer {FW_PROJECT_API_KEY}` POST.**
-`FW_PROJECT_API_KEY` is the `fw_ingest_pub_*` deploy-attestation key; this
+`FW_PROJECT_API_KEY` is the `fw_ingest_pub_*` runtime ingest key (the prod
+flags credential); this
 endpoint authenticates on the org plane (CLI access tokens and `fw_org_*` API
 keys), so a key-bearing POST 401s. `fw api` carries the CLI profile, which is
 the credential this route accepts — and the one plane a repo always has,
-including a dev-only project that never gets a beacon key at all.
+including a dev-only project that never gets an ingest key at all.
 
 **Precondition — check before you send.** Unlike `initialise`, this skill has no
 Step 0 that already gated on auth, so establish both here:
@@ -200,8 +201,8 @@ Step 0 that already gated on auth, so establish both here:
 - `fw api GET /v1/projects/{projectId}` returns 2xx. This settles the profile,
   the org binding, and `{projectId}` in one call.
 
-If either fails, **do not guess a credential and do not fall back to the beacon
-key** — the endpoint would reject it. Report the harness as migrated in the
+If either fails, **do not guess a credential and do not fall back to the
+ingest key** — the endpoint would reject it. Report the harness as migrated in the
 session summary, name the project page as still-warning, and say which of the
 two checks failed so the operator can run `fw login` / `fw profile use` and
 re-send.

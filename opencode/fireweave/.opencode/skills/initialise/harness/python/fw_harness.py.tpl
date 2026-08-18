@@ -9,11 +9,6 @@ via ``FW_ENV_PROFILES``.
 Nothing is swapped at promotion — ``safe-rollout`` ramps via ``flag.control`` and
 never mutates this file.
 
-BOOT BEACON: still deferred on this surface. There is no python deploy SDK, so
-there is nothing to send the stamp tree with. ``verify_prod_path`` reports that
-as a NAMED SKIP — a recorded gap, never a pass — and the flag path above is
-unaffected: flags and deploy attestation are independent.
-
 ``init_fw_harness()`` MUST be called as the FIRST statement in the app entrypoint
 (top of ``__main__`` / the ASGI/WSGI app factory) so the provider + telemetry are
 live before any flag read. It is SYNCHRONOUS — do not await it. ``is_prod()`` is
@@ -30,17 +25,8 @@ from typing import Mapping
 from openfeature import api
 
 from .fw_providers import make_connected_vendor_provider, make_dev_provider
-# Plain import — USED below (passed nowhere yet, but referenced) so the stamp
-# tree is not stripped. The python deploy SDK (Phase 1b) will send these.
-from .fw_tracker import FW_STAMPS
-
-# Surface participation (surface-ID routing) — dev-only tracking on this branch.
-# fw-server mints one ``sfc_<ULID>`` per surface and ``/fireweave:initialise``
-# RECORDS it here (Step 3f, ``fw repo declare-surfaces``) -- never invent one; its
-# ``stamps`` are THIS surface's ``FW_STAMPS``. The python deploy SDK (Phase 1b)
-# will send ``FW_SURFACES`` on the boot beacon (alongside the deduped ``stamps``
-# union). Tracked but NOT transmitted yet — no prod-path work on this branch.
-FW_SURFACES: list[dict[str, object]] = [{"surface_id": "sfc_REPLACE_ON_INIT", "stamps": FW_STAMPS}]
+# ``fw_tracker.py`` stays on disk as the committed stamp record — ``reconcile``
+# and the dev-checklist gates read it from the repo, so it needs no import here.
 
 # env -> tier profile — regenerated from FireWeave ``list_project_environments``.
 # Keep in sync with ``.fireweave/project.json`` ``rolloutReady.environments``.
@@ -123,17 +109,11 @@ def init_fw_harness() -> None:
         make_connected_vendor_provider() if prod else make_dev_provider()
     )
 
-    # Telemetry: console on both tiers for now. Direct OTLP export lands with the
-    # python deploy SDK; emitting a half-wired exporter would be worse than
-    # console, because it looks configured and silently drops every span.
+    # Telemetry: console on both tiers for now — wire a direct OTLP exporter
+    # yourself if this app exports spans; emitting a half-wired exporter would
+    # be worse than console, because it looks configured and silently drops
+    # every span.
     _init_console_telemetry("fireweave-app")
-
-    # Boot beacon: DEFERRED — there is no python deploy SDK to send it with.
-    # The stamp tree and its per-surface participation are tracked here so the
-    # anchors stay honest; verify_prod_path records the missing beacon as a
-    # named skip rather than a pass.
-    _ = FW_STAMPS
-    _ = FW_SURFACES
 
 
 def _init_console_telemetry(service_name: str) -> None:

@@ -2,10 +2,11 @@
  * fw-providers.ts — scaffolded by `/fireweave:initialise` (TS-server surface).
  *
  * `makeConnectedVendorProvider()` is the prod flag provider with a CONCRETE body:
- * it reads `FW_PROJECT_API_KEY` + `FW_API_URL` (falls back to `FW_ATTEST_URL`) and
+ * it reads `FW_PROJECT_API_KEY` + `FW_API_URL` (falls back to the legacy-named
+ * `FW_ATTEST_URL`, which older provisioning wrote — same fw-server base URL) and
  * binds `@fireweaveai/sdk`'s remote adapter (fw-server `POST /v1/flags/evaluate`).
  * Apps do NOT embed PostHog keys — Seal still provisions flags on
- * FireWeave-managed PostHog server-side. (attest + OTel stay on deploy-sdk.)
+ * FireWeave-managed PostHog server-side. (OTel stays on deploy-sdk.)
  *
  * `registerFwTarget()` is the OTHER half of targeting. Rules match on two kinds
  * of property and you need both:

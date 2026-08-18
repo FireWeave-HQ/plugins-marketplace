@@ -163,12 +163,12 @@ const SURFACE_SCAN_VOCABULARY = {
   rust: { extensions: ['.rs'], anchorSyntaxes: ['slash'] },
   python: { extensions: ['.py', '.pyi'], anchorSyntaxes: ['hash'] },
   dart: { extensions: ['.dart'], anchorSyntaxes: ['slash'] },
+  java: { extensions: ['.java'], anchorSyntaxes: ['slash'] },
 };
 const SCAN_SURFACES = Object.keys(SURFACE_SCAN_VOCABULARY);
 /** Extensions with no surface type yet — they ride along with every scan. */
 const UNGOVERNED_SCAN_EXTENSIONS = [
   '.rb',
-  '.java',
   '.kt',
   '.kts',
   '.swift',

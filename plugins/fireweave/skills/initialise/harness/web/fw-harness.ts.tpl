@@ -23,22 +23,10 @@ import {
   initFwTelemetry,
   registerFwWebFlagHooks,
 } from '@fireweaveai/deploy-sdk/flags/web';
-import { initFwAttestation } from '@fireweaveai/deploy-sdk';
-import { resolveBootBeaconFromEnv } from '@fireweaveai/deploy-sdk/attest';
 import { makeConnectedVendorProvider, makeDevProvider } from './fw-providers';
-// Plain static value import — USED below so DCE can't drop it.
-import { FW_STAMPS } from './fw-tracker';
-
-// Surface participation (surface-ID routing). The generated `sfc_<ULID>` claims
-// THIS surface's identity; its `stamps` are THIS surface's `FW_STAMPS`.
-// fw-server mints ONE `sfc_` id per surface and `/fireweave:initialise`
-// RECORDS it here (Step 3f, `fw repo declare-surfaces`); never invent one and
-// never reuse one across surfaces. Regenerated on `--reinit` from the same
-// declaration. It is passed
-// to `initFwAttestation` as `surfaces` so new fw-servers attribute deploy
-// liveness PER SURFACE, while `stamps: FW_STAMPS` stays the deduped union for
-// older servers (dual-emit — the SDK folds surface stamps into that union).
-const FW_SURFACES = [{ surfaceId: 'sfc_REPLACE_ON_INIT', stamps: FW_STAMPS }];
+// The `fw-tracker/` const tree stays on disk as the committed stamp record —
+// `reconcile` and the dev-checklist gates read it from the repo, so it needs
+// no import here.
 
 type FwEnvTier = 'dev' | 'prod';
 
@@ -104,14 +92,4 @@ export async function initFwHarness(): Promise<void> {
   // Awaits the provider's FIRST flag set so the synchronous reads that follow
   // resolve against real values — the per-call reads themselves are sync.
   await OpenFeature.setProviderAndWait(provider);
-
-  initFwAttestation({
-    stamps: FW_STAMPS,
-    surfaces: FW_SURFACES,
-    // Boot beacon runs from Node/SSR bootstrap env — do NOT bundle ingest keys via VITE_*.
-    // Labelled with the harness-resolved env NAME (fwEnvName) — no PUBLIC_FW_ENV needed.
-    ...(typeof process !== 'undefined'
-      ? resolveBootBeaconFromEnv({ env: process.env, prod, environment: fwEnvName })
-      : {}),
-  });
 }
