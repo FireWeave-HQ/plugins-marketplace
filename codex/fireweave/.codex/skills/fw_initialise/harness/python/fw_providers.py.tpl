@@ -1,84 +1,199 @@
 """fw_providers.py — scaffolded by ``/fireweave:initialise`` (PYTHON surface).
 
-``make_connected_vendor_provider()`` is the prod flag provider with a CONCRETE
-body: it binds the ``fireweave`` SDK's remote adapter (fw-server
-``POST /v1/flags/evaluate``). The adapter reads ``FW_API_URL`` +
-``FW_PROJECT_API_KEY`` from ``os.environ`` itself, so there is nothing to plumb
-here. Apps do NOT embed PostHog keys — Seal provisions flags on
-FireWeave-managed PostHog server-side.
+``make_connected_vendor_provider()`` is the prod control-point client with a
+CONCRETE body: it reads ``FW_API_URL`` + ``FW_PROJECT_API_KEY`` from
+``os.environ`` and hands them to ``init_fireweave()`` from the ``fireweave``
+SDK, which brings up the remote adapter against fw-server
+``POST /v1/flags/evaluate``.
 
-``make_dev_provider()`` is the FireWeave LOCAL provider from the SAME SDK, served
-through the same OpenFeature surface as prod. Both tiers therefore share
-lifecycle gating and context canonicalization, so the harness cannot skew between
-them. Never substitute a stock OpenFeature ``InMemoryProvider`` here: it answers
-from a different code path than the one prod uses, which is how a flag behaves
-one way on a laptop and another way in production.
+**The SDK reads no environment variables at all** (spec/modes.md) — this file
+is the seam where those two vars become explicit options. Earlier scaffolds let
+the adapter read ``os.environ`` itself; v1 removed that, so a harness that does
+not pass them explicitly boots into a client with no credentials. Apps do NOT
+embed vendor keys — which backend fw-server forwards to is fw-server's concern.
 
-``register_fw_target()`` is the OTHER half of targeting. Rules match on two kinds
-of property and you need both:
+``mode`` is REQUIRED and never inferred (spec/modes.md). A missing credential
+is a boot error here, never a silent fall-back to local evaluation — that
+failure mode looks like a green boot and a feature that never ramps, which is
+indistinguishable from a rollout nobody started.
+
+``make_dev_provider()`` brings the SAME entry point up in LOCAL mode — an
+in-process seeded map, no network, no credentials. Both tiers therefore share
+validation, lifecycle gating and context canonicalization, so the harness
+cannot skew between them.
+
+``register_fw_target()`` is the OTHER half of targeting. Rules match on two
+kinds of property and you need both:
 
   - DURABLE — registered here, once per login / device provisioning: plan, beta
     membership, region, device model. Stored server-side, so rules keep matching
     without the app resending anything, and backend systems can set facts the
     client never knows.
-  - PER-REQUEST — the OpenFeature evaluation context: page, session, experiment
+  - PER-REQUEST — the per-call evaluation context: page, session, experiment
     context. Overrides the registered value for that one call.
 
 A rule targeting a property that is never registered AND never sent matches
 nobody, silently. Register the durable facts at sign-in.
 
-Requires the ``openfeature`` extra: ``pip install 'fireweave[openfeature]'``.
-The extra is what pulls ``openfeature-sdk``; ``fireweave`` core is
-dependency-free by design, so without the bracket these imports fail.
+``pip install fireweave`` — no extra. The ``[openfeature]`` extra is GONE:
+v1 bans an OpenFeature provider outright (spec/control-points.md "Scope of
+v1"), so the subpackage that needed it no longer exists.
 
-Ejecting strips this file's imports and leaves the call-sites on raw OpenFeature,
-so removing FireWeave leaves no app-code lock-in. The file itself is yours to
-delete once nothing imports it.
+Observability is NOT wired here. FireWeave does not take responsibility for
+wiring an observability SDK into a repo that has not chosen one.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import os
+import warnings
+from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
 
-from openfeature.provider import AbstractProvider
+from fireweave import FireweaveClient, RegisterTargetOptions, init_fireweave
 
-from fireweave import (
-    FireweaveRemoteAdapter,
-    FireweaveRuntime,
-    RegisterTargetOptions,
-)
-from fireweave.openfeature import FireweaveProvider, make_fireweave_local_provider
-
-# Retained so ``register_fw_target`` reaches the same runtime the provider uses.
-_fw_runtime: Optional[FireweaveRuntime] = None
+# Set by whichever factory below ``init_fw_harness()`` calls — dev and prod
+# both go through it.
+_fw_client: Optional[FireweaveClient] = None
 
 
-def make_connected_vendor_provider() -> AbstractProvider:
-    """PROD: Fireweave remote provider → fw-server /v1/flags/evaluate.
+_warned_legacy_api_url = False
 
-    The adapter resolves ``FW_API_URL`` + ``FW_PROJECT_API_KEY`` from the
-    environment and raises ``ConfigurationError`` at initialize() when either is
-    missing — a loud prod misconfiguration rather than a silent all-defaults
-    evaluation.
+
+def _resolve_fw_api_url() -> str:
+    """FW_API_URL, falling back to the legacy-named FW_ATTEST_URL.
+
+    Older provisioning wrote ``FW_ATTEST_URL`` for the same fw-server base URL.
+    Reading it warns ONCE: a silent fallback never clears itself, because the
+    deploy environment keeps the old variable forever if nothing says it is
+    old. A warning and not an error — a rename must not take a running service
+    down.
     """
-    global _fw_runtime
-    _fw_runtime = FireweaveRuntime(FireweaveRemoteAdapter())
-    return FireweaveProvider(_fw_runtime)
+    global _warned_legacy_api_url
+    current = os.environ.get("FW_API_URL")
+    if current:
+        return current.strip().rstrip("/")
+    legacy = os.environ.get("FW_ATTEST_URL")
+    if legacy:
+        if not _warned_legacy_api_url:
+            _warned_legacy_api_url = True
+            warnings.warn(
+                "[fireweave] FW_ATTEST_URL is a legacy name for the fw-server base "
+                "URL. Rename it to FW_API_URL in this environment — the value does "
+                "not change. See fireweave.md.",
+                stacklevel=2,
+            )
+        return legacy.strip().rstrip("/")
+    return ""
 
 
-def make_dev_provider() -> AbstractProvider:
-    """DEV: FireWeave local provider (echo + dev_flags), same SDK as prod.
+def _allowed_hosts_for(api_url: str) -> list[str]:
+    """Hosts the SDK is permitted to talk to, derived from your configured URL.
 
-    Call-site / manifest defaults stay ``False`` (RAMP-1). To dogfood a flag ON
-    locally, list it here — never ``fw_flag(key, True)`` (that same ``True`` is
-    the prod fallback when the provider flag is missing)::
+    REQUIRED for a self-hosted fw-server, not optional hardening.
+    ``init_fireweave`` validates ``api_url`` against a CANONICAL allowlist (the
+    fireweave.ai hosts plus loopback) when ``allowed_hosts`` is omitted, so a
+    customer-run fw-server on any other hostname fails initialisation with a
+    bare ``ConfigurationError`` that names nothing. Passing the configured host
+    explicitly is what makes self-hosting work; it is still an allowlist, so it
+    stays an SSRF guard.
+    """
+    hostname = urlparse(api_url).hostname
+    return [h for h in (hostname, "localhost", "127.0.0.1") if h]
 
-        return make_fireweave_local_provider(
-            echo=True,
-            dev_flags={"<feature-slug>": True},
+
+# ── Environment-keyed tier model (D26) — GENERATED by ``/fireweave:initialise`` ─
+# This lives here, not in fw_harness.py, so the file you review stays about ten
+# lines. Regenerated from FireWeave ``list_project_environments``; keep in sync
+# with ``.fireweave/project.json`` ``rolloutReady.environments``. ``staging`` is
+# a FIRST-CLASS prod-tier environment — it is NEVER silently folded into dev.
+FW_DEFAULT_ENV = "development"
+FW_ENV_PROFILES: dict[str, str] = {
+    "development": "dev",
+    "staging": "prod",
+    "production": "prod",
+}
+
+
+# FireWeave reads THIS project's OWN environment signal — you do NOT need to add
+# a FireWeave-specific ``FW_ENV``. ``/fireweave:initialise`` asks how this repo /
+# CI determines its live environment and generates ``_read_env_signal`` below to
+# read YOUR var (``APP_ENV`` / ``ENVIRONMENT`` / a framework setting / a platform
+# var). ``FW_ENV`` is retained ONLY as an optional override. Regenerated on
+# ``--reinit`` — edit through the skill, not by hand.
+# fw:env-source
+def _read_env_signal(env: Mapping[str, str]) -> str | None:
+    return env.get("APP_ENV") or env.get("ENVIRONMENT") or env.get("ENV") or env.get("FW_ENV")
+
+
+# Map a raw signal value -> a FireWeave environment NAME (a key of
+# FW_ENV_PROFILES). initialise fills this only when your values differ from the
+# FireWeave names (e.g. {"prod": "production"}). Empty = identity mapping.
+FW_ENV_ALIASES: dict[str, str] = {}
+
+
+def resolve_fw_env_name(env: Mapping[str, str]) -> str:
+    """Resolve the running environment NAME from the project's own signal."""
+    raw = (_read_env_signal(env) or FW_DEFAULT_ENV).strip()
+    return FW_ENV_ALIASES.get(raw, raw)
+
+
+def is_prod(env: Mapping[str, str] | None = None) -> bool:
+    """Is this process a prod-tier environment? The tier decision fw_harness.py
+    branches on, and the token ``verify_prod_path`` greps for.
+
+    An UNKNOWN environment is never silently folded into dev or prod — it warns,
+    so the operator adds an explicit row rather than discovering the
+    classification from behaviour.
+    """
+    env = os.environ if env is None else env
+    name = resolve_fw_env_name(env)
+    profile = FW_ENV_PROFILES.get(name)
+    if profile is not None:
+        return profile == "prod"
+    warnings.warn(
+        f"[fireweave] environment '{name}' has no FW_ENV_PROFILES entry; "
+        "classified as 'dev'. Run /fireweave:initialise --reinit or add it "
+        "to FW_ENV_PROFILES.",
+        stacklevel=2,
+    )
+    return False
+
+
+def make_connected_vendor_provider() -> FireweaveClient:
+    """PROD: Fireweave remote mode → fw-server /v1/flags/evaluate."""
+    global _fw_client
+    api_url = _resolve_fw_api_url()
+    api_key = (os.environ.get("FW_PROJECT_API_KEY") or "").strip()
+    if not api_url or not api_key:
+        raise RuntimeError(
+            "[fireweave] prod control points require FW_PROJECT_API_KEY and "
+            "FW_API_URL (or FW_ATTEST_URL)"
+        )
+    _fw_client = init_fireweave(
+        mode="remote",
+        api_url=api_url,
+        api_key=api_key,
+        allowed_hosts=_allowed_hosts_for(api_url),
+    )
+    return _fw_client
+
+
+def make_dev_provider() -> FireweaveClient:
+    """DEV: the SDK's local mode — in-process seeded map, no network.
+
+    Call-site / manifest defaults stay ``False`` (RAMP-1). To dogfood a control
+    point ON locally, seed it here — never ``fw_flag(key, True)`` (that same
+    ``True`` is the prod fallback when the key is missing from the backend)::
+
+        init_fireweave(
+            mode="local",
+            local={"control_points": {"<feature-slug>": True}},
         )
     """
-    return make_fireweave_local_provider(echo=True)
+    global _fw_client
+    _fw_client = init_fireweave(mode="local", local={"control_points": {}})
+    return _fw_client
 
 
 def register_fw_target(
@@ -89,18 +204,30 @@ def register_fw_target(
     """Register a user or device for DURABLE targeting.
 
     Call once from your auth middleware / sign-in handler, then pass the SAME id
-    as ``targeting_key`` in the OpenFeature evaluation context::
+    as ``targeting_key`` in the per-call evaluation context::
 
         register_fw_target(user.id, properties={"plan": user.plan})
 
-    Never raises — an analytics call must not break sign-in. On the dev tier
-    there is no remote runtime, so this reports ``False`` rather than pretending
-    to have registered anything.
+    Resolves rather than raising — it runs in sign-in paths, where a targeting
+    concern must not break authentication. Both tiers route through the SAME
+    client: prod sends it to fw-server; local records it in-process and traces
+    one ``[fireweave:local]`` line saying nothing was sent (spec/modes.md).
+    Log a ``False`` return — a silently unregistered target is exactly how
+    targeting rules end up matching nobody.
     """
-    if _fw_runtime is None:
+    if _fw_client is None:
         return False
-    result = _fw_runtime.register_target(
+    result = _fw_client.register_target(
         targeting_key,
         RegisterTargetOptions(kind=kind, properties=properties or {}),
     )
     return result.ok
+
+
+def get_fw_client() -> FireweaveClient:
+    """The client ``init_fw_harness()`` brought up — call-sites read through it."""
+    if _fw_client is None:
+        raise RuntimeError(
+            "[fireweave] get_fw_client() called before init_fw_harness() ran."
+        )
+    return _fw_client

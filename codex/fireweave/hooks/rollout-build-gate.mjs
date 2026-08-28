@@ -22,6 +22,7 @@
  * | No `.fireweave/project.json` at all     | — | **pass** — not a FireWeave repo; failing here would break every unrelated build. |
  * | `project.json` unreadable / not JSON    | — | **block** — an initialised repo whose pointer cannot be read is not a repo this gate can clear. |
  * | **No usable** `.cache/`                 | none | **block, `fw sync`.** An empty answer here means *this gate cannot see the contract*, not *there is no contract*. |
+ * | `.cache/` this gate's `schemaVersion` cannot read | none | **block as `gate-outdated`, NOT `cache-required`** — the cache is newer than this copy of the gate, so fetching again cannot help. See {@link FIX}. |
  * | **Stale** cache (branch ≠ HEAD)         | `.cache/rollout-ready/` | **scan, with a warning** naming both branches and `fetchedAt`. A stale answer beats no answer — never a silent one. |
  * | **Fresh** cache                         | `.cache/rollout-ready/` | **scan normally**, fully offline. |
  * | Cache + non-empty `.queue/`             | cache **∪** queue | **scan the union**, with every queued contribution TAGGED. The queue is the author's newest intent; excluding it would fail an author's own gate on their own offline work. |
@@ -110,8 +111,65 @@ const QUEUE_ENTRY_FILENAME_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}\.json$/;
  * branch-scoped tombstone whose dead code cleanup already removed.
  */
 const RETIRED_MANIFEST_STATUS = new Set(['archived', 'retiring']);
-const SYNC_FIX =
-  'run `fw sync` — a projection is how this gate sees server-owned manifests offline';
+/**
+ * Remediation is per-STATE, not per-rule.
+ *
+ * `fw sync` used to be the answer to every cache finding, and for most of them
+ * it is the right one: an absent, half-written or hand-edited projection is
+ * rewritten wholesale by the next sync. For two states it is provably not, and
+ * in both the advice sent the reader around a loop that cannot close.
+ *
+ *   * **A gate older than the CLI.** `CACHE_SCHEMA_VERSION` below is a hard
+ *     mirror of the contracts constant, and this file is COPIED into the repo
+ *     by `/fireweave:initialise` and never refreshed afterwards. Once the
+ *     constant moves, every sync rewrites the cache at exactly the version this
+ *     copy rejects — so "run `fw sync`" is an instruction to repeat the thing
+ *     that just failed. The fix is to replace this file.
+ *   * **An unreplayable queue entry.** Syncing cannot drain it (it is precisely
+ *     what makes the drain report unfinished work), and until `fw doctor
+ *     --repair` existed the only remaining exit was `rm` — which every message
+ *     in the system, including the old wording here, told the reader not to
+ *     take. Naming a real, non-destructive command is the difference between a
+ *     warning and a way out.
+ *
+ * These strings reach CI, Cursor, and every other host where the gate runs and
+ * `fw doctor` never does. For a lot of readers they are the only guidance there
+ * is, which is why a wrong one is worth treating as a defect rather than as
+ * wording.
+ */
+const FIX = {
+  /** Nothing has ever been fetched here. */
+  sync: 'run `fw sync` — a projection is how this gate sees server-owned manifests offline',
+  /**
+   * Something IS here and cannot be trusted. Worth saying that sync replaces
+   * rather than merges: a reader looking at a corrupt file usually wants to
+   * know whether they have to clean up first (they do not).
+   */
+  syncRewrite:
+    'run `fw sync` — it rewrites the whole projection, so a partially written ' +
+    'or hand-edited one is replaced rather than merged. Nothing needs deleting first.',
+  gateOutdated:
+    'this gate file is older than the CLI that wrote your cache, so `fw sync` ' +
+    'cannot clear it — every sync rewrites the cache at the version this gate ' +
+    'rejects. Update the Fireweave plugin, then re-run `/fireweave:initialise` ' +
+    'to rewrite .fireweave/hooks/rollout-build-gate.mjs.',
+  queueUnreplayable:
+    'run `fw doctor --repair` — it renames the entry out of the queue instead ' +
+    'of deleting it, so the edit stays on disk and `fw sync` can finish. Do ' +
+    'not remove it by hand: a queued edit is the only copy of that work.',
+  pointerUnreadable:
+    'restore .fireweave/project.json from git, or re-bind the repo with `fw init`',
+};
+
+/** Which `fw sync` sentence — or none at all — a cache verdict earns. */
+function cacheFixFor(code) {
+  if (code === 'schema-version') return FIX.gateOutdated;
+  if (code === 'never-synced') return FIX.sync;
+  return FIX.syncRewrite;
+}
+
+/** Kept for the findings whose remediation genuinely is a plain fetch. */
+const SYNC_FIX = FIX.sync;
 
 const GENERIC_SCAN_EXCLUDE = [
   'node_modules',
@@ -164,17 +222,11 @@ const SURFACE_SCAN_VOCABULARY = {
   python: { extensions: ['.py', '.pyi'], anchorSyntaxes: ['hash'] },
   dart: { extensions: ['.dart'], anchorSyntaxes: ['slash'] },
   java: { extensions: ['.java'], anchorSyntaxes: ['slash'] },
+  swift: { extensions: ['.swift'], anchorSyntaxes: ['slash'] },
 };
 const SCAN_SURFACES = Object.keys(SURFACE_SCAN_VOCABULARY);
 /** Extensions with no surface type yet — they ride along with every scan. */
-const UNGOVERNED_SCAN_EXTENSIONS = [
-  '.rb',
-  '.kt',
-  '.kts',
-  '.swift',
-  '.php',
-  '.cs',
-];
+const UNGOVERNED_SCAN_EXTENSIONS = ['.rb', '.kt', '.kts', '.php', '.cs'];
 /**
  * What the ORPHAN scan opens — every extension any surface can contribute, plus
  * the ungoverned bridge. Constant, and mirrored from `ALL_SCAN_EXTENSIONS`.
@@ -183,7 +235,12 @@ const ALL_SCAN_EXTENSIONS = new Set([
   ...SCAN_SURFACES.flatMap((s) => SURFACE_SCAN_VOCABULARY[s].extensions),
   ...UNGOVERNED_SCAN_EXTENSIONS,
 ]);
-const ANCHOR_RE = /@fireweave-flag\s+([A-Za-z0-9][A-Za-z0-9._-]*)/g;
+// Both markers. This file is a STANDALONE copy that runs inside the customer's
+// repo with no imports, so the alternation is spelled here rather than shared —
+// and it must accept `@fireweave-flag` forever, because every anchor written
+// before the control-points rename uses it and they live in customer source.
+const ANCHOR_RE =
+  /@fireweave-(?:controlpoint|flag)\s+([A-Za-z0-9][A-Za-z0-9._-]*)/g;
 
 /**
  * The union of the surfaces a repo actually declares — with the SAME three
@@ -308,7 +365,7 @@ function fileChecksum(text) {
  * Scan scope, from the cached `repo_state` row and nowhere else.
  *
  * This function MIRRORS `resolveRolloutScanOptions` in
- * `@fireweaveai/deploy-sdk/flags` rather than importing it — this file ships
+ * the rollout-server's scanner rather than importing it — this file ships
  * standalone into a customer repo and cannot resolve `@fireweaveai/*`. The two
  * must therefore be changed together: if the gate and the SDK disagree about
  * which tree gets scanned, the gate is checking a different repo than the
@@ -398,6 +455,7 @@ function validateCache(files) {
   if (metaText === undefined) {
     return {
       status: 'absent',
+      code: 'never-synced',
       reason: `no .fireweave/.cache/${CACHE_META_FILENAME}: this worktree has never been synced, or a sync did not reach its final step`,
     };
   }
@@ -407,24 +465,28 @@ function validateCache(files) {
   } catch {
     return {
       status: 'invalid',
+      code: 'not-json',
       reason: `.fireweave/.cache/${CACHE_META_FILENAME} is not JSON`,
     };
   }
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
     return {
       status: 'invalid',
+      code: 'not-object',
       reason: `.fireweave/.cache/${CACHE_META_FILENAME} is not a JSON object`,
     };
   }
   if (meta.schemaVersion !== CACHE_SCHEMA_VERSION) {
     return {
       status: 'invalid',
+      code: 'schema-version',
       reason: `cache schemaVersion ${JSON.stringify(meta.schemaVersion)} ≠ ${CACHE_SCHEMA_VERSION} — this gate reads a different layout, and guessing which half of an older one is still true costs more than re-fetching`,
     };
   }
   if (typeof meta.branch !== 'string' || meta.branch.length === 0) {
     return {
       status: 'invalid',
+      code: 'no-branch',
       reason: `.fireweave/.cache/${CACHE_META_FILENAME} names no branch — the reader's view is branch-keyed and cannot be placed without one`,
     };
   }
@@ -432,6 +494,7 @@ function validateCache(files) {
   if (!checksums || typeof checksums !== 'object' || Array.isArray(checksums)) {
     return {
       status: 'invalid',
+      code: 'no-checksums',
       reason: `.fireweave/.cache/${CACHE_META_FILENAME} carries no checksum map — integrity is what makes a partial write indistinguishable from no write`,
     };
   }
@@ -457,6 +520,7 @@ function validateCache(files) {
   if (detail.length > 0) {
     return {
       status: 'invalid',
+      code: 'integrity',
       reason:
         'the cache does not match its own manifest — treating it as ABSENT rather than as data',
       detail: detail.sort(),
@@ -661,6 +725,10 @@ async function main() {
       rule: 'project-json-unreadable',
       severity: 'block',
       message: `.fireweave/project.json ${proj.reason} — an initialised repo whose pointer cannot be read is not a repo this gate can clear`,
+      // Previously the one block that named no fix at all. The pointer is
+      // committed, so `git checkout` is usually the shortest way back, and
+      // `fw init` is the answer when it never existed rather than got mangled.
+      fix: FIX.pointerUnreadable,
     });
     return emit(findings);
   }
@@ -687,17 +755,27 @@ async function main() {
         severity: 'block',
         unsynced: true,
         message: `.fireweave/.queue/${u.file} is an unsynced manifest edit this gate cannot read (${u.reason}) — a queued edit that cannot be read is a contract that cannot be checked, and skipping it silently is how an author's own work disappears`,
-        fix: 'drain the queue with the CLI that wrote it, or re-author the manifest — do NOT delete the entry blind',
+        fix: FIX.queueUnreplayable,
       });
     }
 
     // ROW 3 — server-owned, no usable projection. Never green on absent evidence.
+    //
+    // Two verdicts, because the reader has two different problems. Every code
+    // except `schema-version` means the CACHE is unusable and the next fetch
+    // replaces it. `schema-version` means THIS FILE is unusable — the cache is
+    // probably fine and simply newer than the gate reading it — so it gets its
+    // own rule, `gate-outdated`. A caller that acted on `cache-required` here
+    // would keep re-fetching a projection that was never the problem.
     if (cache.status !== 'ok') {
+      const gateOutdated = cache.code === 'schema-version';
       findings.push({
-        rule: 'cache-required',
+        rule: gateOutdated ? 'gate-outdated' : 'cache-required',
         severity: 'block',
-        message: `manifests for this repo are server-owned and there is no usable .fireweave/.cache/: ${cache.reason}. An absent manifest set is NOT evidence that no manifest exists, so this gate refuses to pass on it.`,
-        fix: SYNC_FIX,
+        message: gateOutdated
+          ? `this build gate cannot read .fireweave/.cache/: ${cache.reason}. The gate is copied into the repo by \`/fireweave:initialise\` and is never refreshed by \`fw sync\`, so a newer CLI writes a projection this copy will go on rejecting. Your cache is not necessarily wrong — this file is out of date.`
+          : `manifests for this repo are server-owned and there is no usable .fireweave/.cache/: ${cache.reason}. An absent manifest set is NOT evidence that no manifest exists, so this gate refuses to pass on it.`,
+        fix: cacheFixFor(cache.code),
         ...(cache.detail ? { detail: cache.detail } : {}),
       });
       // No anchor scan: without a manifest source every anchor would report as

@@ -21,7 +21,7 @@ and only this agent's loop is missing.
 an agent loop.
 
 **Harness-skipping by design.** `adopt` does **not** scaffold `fw-harness`, does **not**
-call `provision_deploy_beacon_env`, does **not** re-enumerate environments, and does **not**
+call `record_rollout_env_contract`, does **not** re-enumerate environments, and does **not**
 author, retire, or otherwise touch rollout-ready manifests or change stamps — those are
 server-owned and belong to the feature loop, not to attaching an agent. If the repo is not
 initialised → PARK and send the user to `/fireweave:initialise`.
@@ -105,7 +105,9 @@ who is not told their copied skills changed has no reason to reload.
 
 ## Do not
 
-- Call `provision_deploy_beacon_env`, rotate keys, or ask about cloud secrets.
+- Call `record_rollout_env_contract`, or ask about cloud secrets. (Nothing in FireWeave mints a
+  credential any more — both key families are issued by the operator in the portal — so there are
+  no keys for adopt to rotate either.)
 - Scaffold or rewrite `fw-harness`, `fw-tracker`, or entrypoint wiring.
 - **Never** touch `.fireweave/rollout-ready/**` (server-owned) or register rollouts.
 - Blind-copy `.cursor/**` into `.claude/**` — generate each host from the templates below (Cursor and Claude shapes differ).
@@ -133,7 +135,7 @@ Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
 ## HARD ORDER — every user-facing or flag-gated feature
 
 1. **FIRST** author the manifest with `mcp__rollout_server__upsert_rollout_manifest` `{ feature, manifest, baseContentHash }` (Manifest contract in agent-instructions) + mint `chg_`/`stmp_` + apply the stamp policy (per-surface stamps by default — append each stamp to its own surface's `FW_STAMPS`; one shared stamp only when single-project + every surface's harness is surface-aware). **FireWeave stores the manifest — do not write a manifest file yourself.**
-2. Implement behind the harness OpenFeature provider with `// @fireweave-flag <key>` at each evaluation site.
+2. Implement behind the harness control point (`fw.controlPoints.getBooleanValue(<key>, false, ctx)`) with `// @fireweave-controlpoint <key>` at each evaluation site.
 3. **BEFORE done** call `mcp__rollout_server__assert_dev_checklist` with `{ feature }` — PARK on any block (includes dummy metrics with no emit sites). Also `reconcile` phase `build`.
 4. Backfill after coding is forbidden. Do not write repo-local `mcp/`.
 5. **Absence has names.** `never-authored` is the only one that means author a manifest. `not-fetched` → `fw sync`; `not-authorized` → the manifests are withheld, not absent (`fw login` / ask an admin); `server-unavailable` → retry; `queued` → you already authored it, drain `.fireweave/.queue/`. Never author to clear the last four.
@@ -157,6 +159,16 @@ OR flag-gated OR behavior-changing** change — including internal/ops/observabi
 wiring — the rollout-ready package comes **FIRST, while you write code**, never as a
 backfill after the feature is built. Backfill breaks promote-not-wrap and is forbidden.
 
+**Classify the task first, in one line:** `change` (you will modify observable
+behaviour) · `inquiry` (explain / locate / review) · `brainstorm` (nothing written
+yet) · `infra-only` (config, docs, formatting, no behaviour delta). Only `change`
+runs the steps below. A keyword hook surfaced this reminder; it cannot tell
+`fix the checkout bug` from `how do I fix this typo` — you can. **When the class
+is genuinely unclear, treat it as `change`:** skipping wrongly ships unflagged
+behaviour that is invisible until nothing can be promoted or rolled back, while
+running wrongly costs a few tool calls. Re-classify the moment a brainstorm
+starts writing code.
+
 1. **FIRST** — author the rollout-ready manifest by calling
    `mcp__rollout_server__upsert_rollout_manifest` `{ feature, manifest, baseContentHash }`
    (Manifest contract in [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md)).
@@ -164,8 +176,8 @@ backfill after the feature is built. Backfill breaks promote-not-wrap and is for
    `baseContentHash` is required and nullable (`null` = "no row yet"); on `conflict`,
    re-apply on top of `current` and retry with `currentContentHash`. Mint
    `chg_<ULID>` + `stmp_<ULID>`, and apply the stamp policy — per-surface stamps by default (append each stamp ONLY to its own surface's `FW_STAMPS`); one shared stamp only when the change is single-project and every participating surface's harness is surface-aware.
-2. Gate the new behavior behind the harness OpenFeature provider and add
-   `// @fireweave-flag <key>` at each evaluation site **as you write it**.
+2. Gate the new behavior behind the harness control point (`fw.controlPoints.getBooleanValue(<key>, false, ctx)`) and add
+   `// @fireweave-controlpoint <key>` at each evaluation site **as you write it**.
 3. **BEFORE calling the task done** — run `mcp__rollout_server__assert_dev_checklist`
    `{ feature }` (PARK on any block) + `detect_rollout_ready` + `reconcile` phase `build`.
 4. Do **not** open a PR / declare done until `assert_dev_checklist.pass === true`.
@@ -287,7 +299,7 @@ if [[ ! -t 0 ]]; then
   fi
 fi
 [[ -z "$prompt" ]] && prompt="${1:-${CLAUDE_USER_PROMPT:-}}"
-msg="FireWeave rollout-ready repo (promote-not-wrap): for every user-facing, flag-gated, or behavior-changing task the rollout-ready package comes FIRST — author the manifest via upsert_rollout_manifest (FireWeave stores it; do not write a manifest file yourself) + mint chg_/stmp_ + append each stamp to its own surface's FW_STAMPS (one shared stamp only when single-project + every surface's harness is surface-aware), add // @fireweave-flag <key> as you code, then assert_dev_checklist + reconcile(build) before done. No backfill. Absence has names: only never-authored means author one; not-fetched=fw sync, not-authorized=withheld not absent, queued=drain .fireweave/.queue. Ship via /fireweave:safe-rollout. See .fireweave/agent-instructions.md."
+msg="FireWeave rollout-ready repo (promote-not-wrap). FIRST classify this task in one line — change | inquiry | brainstorm | infra-only — because this reminder fired on a KEYWORD match and the keyword cannot tell 'fix the checkout bug' from 'how do I fix this typo'. Only 'change' runs the package; when genuinely unclear treat it as change (skipping wrongly ships unflagged behaviour, running wrongly costs a few tool calls). For a change task the rollout-ready package comes FIRST — author the manifest via upsert_rollout_manifest (FireWeave stores it; do not write a manifest file yourself) + mint chg_/stmp_ + append each stamp to its own surface's FW_STAMPS (one shared stamp only when single-project + every surface's harness is surface-aware), add // @fireweave-controlpoint <key> as you code, then assert_dev_checklist + reconcile(build) before done. No backfill. Absence has names: only never-authored means author one; not-fetched=fw sync, not-authorized=withheld not absent, queued=drain .fireweave/.queue. Ship via /fireweave:safe-rollout. See .fireweave/agent-instructions.md."
 if [[ -n "$prompt" ]] && ! echo "$prompt" | grep -qiE '\b(add|implement|feature|feat|fix|ship|build|wrap|change|refactor|rollout|flag)\b'; then exit 0; fi
 node -e "console.log(JSON.stringify({hookSpecificOutput:{hookEventName:process.argv[2]||'UserPromptSubmit',additionalContext:process.argv[1]}}))" "$msg" "${HOOK_EVENT:-}" 2>/dev/null || printf '%s\n' "$msg"
 exit 0
@@ -365,7 +377,7 @@ console.log((j.findings || []).filter((f) => f.severity !== 'info').map((f) => (
 if [ -z "$reason" ]; then
   reason="the gate produced no verdict: $(tr '\n' ' ' <"$err")"
 fi
-msg="FireWeave rollout-ready build gate FAILED: ${reason} Complete the rollout-ready package per .fireweave/agent-instructions.md — author the manifest via upsert_rollout_manifest, add // @fireweave-flag at each evaluation site, append the stamp to its surface's FW_STAMPS — then re-run the gate. If a finding says \`fw sync\`, this worktree has no server projection and absence is NOT evidence: fetch it rather than authoring over a contract you cannot see."
+msg="FireWeave rollout-ready build gate FAILED: ${reason} Complete the rollout-ready package per .fireweave/agent-instructions.md — author the manifest via upsert_rollout_manifest, add // @fireweave-controlpoint at each evaluation site, append the stamp to its surface's FW_STAMPS — then re-run the gate. If a finding says \`fw sync\`, this worktree has no server projection and absence is NOT evidence: fetch it rather than authoring over a contract you cannot see."
 node -e "console.log(JSON.stringify({ decision: 'block', reason: process.argv[1] }))" "$msg" 2>/dev/null \
   || printf '%s\n' "$msg"
 exit 0

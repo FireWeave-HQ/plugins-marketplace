@@ -18,6 +18,13 @@ set "BIN_NAME=server-windows-x64.exe"
 set "BIN_PATH=%BIN_DIR%\%BIN_NAME%"
 
 REM Fast path: binary already cached.
+REM
+REM The Unix launcher also compares bin\<name>.sha against urls.json here and
+REM re-fetches when the bundle digest changed. This launcher WRITES that stamp
+REM (below) but does not yet read it: the check needs a PowerShell spawn on
+REM every launch, and this Windows path is the untested fallback — the stamp is
+REM written so the check can be added, and verified on a real Windows host,
+REM without a second format change.
 if exist "%BIN_PATH%" (
   "%BIN_PATH%" %*
   exit /b %ERRORLEVEL%
@@ -45,6 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$entry = $zip.Entries | Where-Object { $_.FullName -eq 'server/%BIN_NAME%' };" ^
   "if (-not $entry) { Write-Error 'MCPB does not contain server/%BIN_NAME%'; $zip.Dispose(); Remove-Item '%TMP_MCPB%' -ErrorAction SilentlyContinue; exit 1 };" ^
   "[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '%BIN_PATH%', $true);" ^
+  "[System.IO.File]::WriteAllText('%BIN_PATH%.sha', $p.sha256.ToLower());" ^
   "$zip.Dispose();" ^
   "Remove-Item '%TMP_MCPB%' -ErrorAction SilentlyContinue;"
 
