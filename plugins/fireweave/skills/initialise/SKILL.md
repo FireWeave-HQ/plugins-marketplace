@@ -1914,3 +1914,23 @@ Two write tools replace hand-poking files under `.fireweave/`:
   An absent manifest is reported as _not-authored_ / _not-fetched_ /
   _not-authorized_ / _queued_; never author a replacement to resolve one of the
   last three.
+
+---
+
+## Make the FireWeave readiness check required (Step 7d — tell the user, do not do it)
+
+Once the org's GitHub App is installed, every PR into the environment branch
+gets the check run **`FireWeave — rollout readiness`** from rollout-ci (server
+side, in a FireWeave sandbox — nothing to install in the repo; see
+`docs/wiki/concepts/rollout-ci.md`). It is announced `in_progress` before the
+verdict runs, so it blocks the merge **only if the branch ruleset requires
+it**. Rulesets are the customer's to change — initialise never edits them.
+Print this, verbatim, at the end of a successful run:
+
+> To make the FireWeave verdict block merges: Settings → Rules → Rulesets →
+> the ruleset for `<env branch>` → "Require status checks to pass" → add
+> **FireWeave — rollout readiness** (select the FireWeave app as its source,
+> not "any source"). Leave "Require branches to be up to date" as it is.
+> Until you do, the check is visible on every PR but advisory-only.
+
+Do not PARK on this; it is a message, not a gate.
