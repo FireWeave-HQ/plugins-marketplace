@@ -4,7 +4,7 @@ Skills for working with FireweaveAI directly from your AI coding tool.
 
 ## Skills
 
-- **safe-rollout** — Ship a change that is already rollout-ready: verify the generated prod branch (no provider swap, no re-wrapping), register the rollout, and ramp it on the deploy-liveness gate with auto-promote / rollback. Requires a repo initialised via `/fireweave:initialise`. Invoke via `/fireweave:safe-rollout`.
+- **safe-rollout** — Ship a change that is already rollout-ready: verify the generated prod branch (no provider swap, no re-wrapping), register the rollout for a human to start once the change is deployed, then ramp it with auto-promote / rollback. Requires a repo initialised via `/fireweave:initialise`. Invoke via `/fireweave:safe-rollout`.
 
 ## Install
 

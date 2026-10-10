@@ -1,6 +1,6 @@
 ---
 name: "initialise"
-description: "One-time per-repo setup for FireWeave Rollouts. Detects coding agents + language + deploy targets, runs the capability/connection resolver to wire the FireWeave control-points SDK for flags (telemetry is the app's own — initialise DETECTS it, never wires it), scaffolds the isProd() harness + fw-tracker + config, wires the harness into the app entrypoint, installs standing instructions + Cursor dev-loop rules/hooks (so feature work keeps rollout-ready manifests/anchors/stamps in sync), and writes agent links. Use when the user asks to \"set up FireWeave rollouts\", \"initialise rollout-ready\", \"instrument this repo\", or invokes `/fireweave:initialise`. `--reinit` / `--remove`."
+description: "One-time per-repo setup for FireWeave Rollouts. Detects coding agents + language + deploy targets, runs the capability/connection resolver to wire the FireWeave control-points SDK for control points (telemetry is the app's own — initialise DETECTS it, never wires it), wires each NEW surface onto the SDK start profile (one start call first in the entrypoint + a control-points file; existing scaffold surfaces keep their isProd() harness + fw-tracker), installs standing instructions + Cursor dev-loop rules/hooks (so feature work keeps rollout-ready manifests/anchors/stamps in sync), and writes agent links. Use when the user asks to \"set up FireWeave rollouts\", \"initialise rollout-ready\", \"instrument this repo\", or invokes `/fireweave:initialise`. `--reinit` / `--remove`."
 compatibility: "opencode"
 ---
 > Interaction: gate each decision with the native `question` tool (multi-option; supports multi-select + custom free-text).
@@ -8,7 +8,7 @@ compatibility: "opencode"
 # Initialise (one-time rollout-ready setup)
 
 Run **once** per repo. This front-loads the rollout structure so later shipping is
-a **promote, not a wrap** (D26): it scaffolds a harness with BOTH flag branches present
+a **promote, not a wrap** (D26): it scaffolds a harness with BOTH control-point branches present
 (dev in-memory provider; prod connected-vendor provider) — and **no telemetry
 wiring in either**, because the app's observability SDK is the app's own —
 wires it into the app entrypoint, and installs the **dev loop** (standing
@@ -17,18 +17,35 @@ instructions + Cursor rules/hooks) so every feature change keeps
 `fw-tracker` stamps aligned before `/fireweave:safe-rollout`. It does NOT
 wrap existing code.
 
+## Two harness kinds — the start profile for new surfaces, the scaffold for existing ones
+
+Every surface is one of two kinds, recorded as `harnessKind` on its `project.json`
+`surfaces[]` entry:
+
+| Kind                                    | When                                                                                               | What initialise writes                                                                                                                                                                                                              |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **package** — the SDK **start profile** | **every NEW surface**, all eight languages, SDK ≥ 3.0.0                                            | A control-points file and ONE start call placed first in the entrypoint (see **Start profile — per-language reference**), stamps in `.fireweave/stamps.<ext>`. No harness module, no providers file, no `FW_ENV_PROFILES`.          |
+| **scaffold** — `harnessKind` absent     | a surface that ALREADY carries a generated harness (`fw-harness.*`, `FwHarness.*`, `fw_harness.*`) | The generated harness + providers + tracker, calling the core `initFireweave` with an explicit mode. Everything this document says about `FW_ENV_PROFILES`, the env-source interview, templates and `FW_STAMPS` is about this kind. |
+
+**Never convert a scaffold surface here.** `--reinit` refreshes it as a scaffold
+surface, unchanged; moving it onto the start profile is `/fireweave:migrate-harness`,
+which re-keys the surface on the server. Tell the user so once, naming each scaffold
+surface. A fresh initialise never writes `FW_PROJECT_API_KEY`, `FW_API_URL` or
+`FW_ENV_PROFILES` for a package surface. Each step below says what a package surface
+does where it differs.
+
 ## What initialise puts in git — and what it does not (ADR-019)
 
 Rollout state is **server-owned**. Initialise writes a small, permanent, committed
 surface and pushes everything else to fw-server:
 
-| Committed to git (written once, never by feature work)                                                  | Owned by fw-server (never scaffolded as a directory)                                                          |
-| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `.fireweave/project.json` — the **pointer**: `orgId`, `projectId` (or a `projects{}` map), `server.url` | Rollout-ready manifests → `repo_manifests`, authored via `rollout-server_upsert_rollout_manifest`       |
-| `.fireweave/agent-instructions.md`                                                                      | Change stamps → `change_stamps` (D-D). `FW_STAMPS` in `fw-tracker` stays the one git-visible per-feature line |
-| `.fireweave/PROVIDERS.md`                                                                               | Repo-scoped config → `repo_state`, written via `rollout-server_update_repo_state`                       |
-| `.fireweave/hooks/` (build gate + wrapper)                                                              | Project×env + surface config → already server-side                                                            |
-| `.fireweave/.gitignore`                                                                                 |                                                                                                               |
+| Committed to git (written once, never by feature work)                                                  | Owned by fw-server (never scaffolded as a directory)                                                                                                           |
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.fireweave/project.json` — the **pointer**: `orgId`, `projectId` (or a `projects{}` map), `server.url` | Rollout-ready manifests → `repo_manifests`, authored via `rollout-server_upsert_rollout_manifest`                                                        |
+| `.fireweave/agent-instructions.md`                                                                      | Change stamps → `change_stamps` (D-D). `FW_STAMPS` in `fw-tracker` (`.fireweave/stamps.<ext>` on a package surface) stays the one git-visible per-feature line |
+| `.fireweave/PROVIDERS.md` (scaffold surfaces only)                                                      | Repo-scoped config → `repo_state`, written via `rollout-server_update_repo_state`                                                                        |
+| `.fireweave/hooks/` (build gate + wrapper)                                                              | Project×env + surface config → already server-side                                                                                                             |
+| `.fireweave/.gitignore`                                                                                 |                                                                                                                                                                |
 
 **Do not create `.fireweave/rollout-ready/`, `.fireweave/changelog/`, or an
 `_archive/` directory.** They have no successor directory — archival is a `status`
@@ -52,12 +69,15 @@ author state — _not_ a cache, no cache-clear remediation may delete it),
 `.fireweave/.lock`, `.fireweave/local.json`.
 
 `.fireweave/deploy-beacon.env.local` is **gone** — initialise no longer mints a
-credential or writes one to disk. Both key families are issued by the operator in
-the portal; `fireweave.md` (repo root, **committed**) names the variables. A repo
+credential or writes one to disk. The project key is issued by the operator in the
+portal; a package client surface's browser key comes from `issue_browser_key`
+(Step 3c). `fireweave.md` (repo root, **committed**) names a scaffold surface's variables. A repo
 scaffolded before this change may still carry the old file: it is inert, and
 deleting it is safe once the deploy environment has the values.
 
-**Environment-keyed, not dev/prod-binary (D26).** The harness selects its branch
+**Scaffold surfaces are environment-keyed, not dev/prod-binary (D26).** (A package
+surface needs none of this: the start profile infers its mode — see **The SDK
+contract**.) The harness selects its branch
 from the **running environment NAME** — the project's `defaultEnvironment` plus
 every environment declared in FireWeave (`list_project_environments`) — via a
 generated `FW_ENV_PROFILES` map, NOT a bare `NODE_ENV` boolean. Each environment
@@ -69,14 +89,15 @@ switch. The default environment is the row that runs when nothing is set at runt
 and it determines which capability bindings the **dev** branch reflects; the **prod**
 branch is wired from the **prod-tier** environment's bindings (Step 3).
 
-Current prod scope is **TS-server + web + Python + Java on the Fireweave remote
-mode**. For a surface with no installable SDK release yet (Go, Rust,
-Flutter/`dart`, and Swift — see **Swift surface**), it scaffolds the dev tier
-only (the SDK's LOCAL mode, in-process and credential-free, in the surface's own
-idiom) and prints an explicit "prod deferred" notice — it never emits a half-wired prod
-branch that would false-green `rollout-server_verify_prod_path` (which skips
-these surfaces as a recorded gap; see the rollout-server `SURFACE_REGISTRY`). Likewise, a project with
-**no prod-tier environment** (dev-only) gets the dev branch scaffolded and prod
+**Surface support (one table, the rollout-server `SURFACE_REGISTRY` agrees).**
+Every language — ts-server, web, Python, Go, Java, Rust, Dart and Swift — is
+**package-capable at SDK ≥ 3.0.0**, prod included, on the SDK's remote mode. The
+gate is `rollout-server_resolve_sdk_install`: when it cannot resolve a 3.0.0
+release for the surface's channel it refuses, and the surface is not wired. Swift is
+distributed through the **mirror repository** (SwiftPM resolves the `FireweaveStart`
+product from it), never from a `swift/*` tag on the SDK repository. Scaffold
+surfaces keep the support they were scaffolded with and are not created any more. A
+project with **no prod-tier environment** (dev-only) gets the dev path wired and prod
 secrets **deferred with an explicit notice** — Step 3 never forces a prod-run
 question when there is no prod-tier environment to run against.
 
@@ -174,6 +195,57 @@ remain scaffold/ship — track them in `sessionWrote[]` and roll back on hard
 PARK. Pass the same `{ cwd }` to `record_rollout_env_contract` and other
 bind/write tools.
 
+**0d — Setup plan (ADR-028, ONB-D9).** Once the bind holds, ask FireWeave
+whether this repository was already analysed and planned in the web app:
+`fw api GET /v1/projects/{projectId}/setup-plan?repo={owner/name}` (`projectId`
+from `.fireweave/project.json`, `owner/name` from the `origin` remote). Over
+the CLI profile, like every Step 0 call — read only, writes nothing.
+
+- **404** (`SETUP_PLAN_NOT_FOUND`) — no plan: proceed exactly as without one.
+- **409** (`REPO_CONTEXT_ONLY`) — this project links the repository as
+  Context only; FireWeave never sets it up. PARK and name the project that
+  manages it (`error.details.managedBy`), or say none does.
+- **200** — the response's `plan` answers these gates. For each one, use the
+  plan's value instead of asking, and record it with
+  `write_confirmation_receipt` exactly as the ask would have, with
+  `selectedNotes: "source: webapp (setup plan v<version>)"` so the receipt
+  says the answer came from the web app, not this session:
+
+  | Gate                                    | Plan answer                                               |
+  | --------------------------------------- | --------------------------------------------------------- |
+  | Step 1 "Let FireWeave manage rollouts?" | yes: the repository is Managed in the plan                |
+  | Step 2 `teamAgents`                     | `plan.teamAgents`                                         |
+  | 3a envs carrying real traffic           | `plan.environments`                                       |
+  | 3b INIT-B11 observability unbound       | `plan.automation.autoRampEnabled`                         |
+  | 3c where each prod-tier env runs        | `plan.environments[].runsOn`                              |
+  | 3d env-source confirm                   | `plan.surfaces[].envSource`                               |
+  | FW_ENV_ALIASES confirm                  | `plan.environments[].aliasValues`                         |
+  | GATE-3F-SURFACE-SELECTION               | `plan.surfaces[].selected`                                |
+  | GATE-3F-VANISHED-SURFACES               | not in the plan: ask as today                             |
+  | 6b identity seam                        | `plan.surfaces[].identitySeam` (`pr-todo` → ask as today) |
+  | package-manager ambiguity               | `plan.surfaces[].packageManager`                          |
+  | channel                                 | `plan.sdkChannel`                                         |
+
+  A plan value that is `null` or missing answers nothing: ask that gate as
+  today. Everything not in the table — auth, keys, secrets, the browser key,
+  the harness itself — runs exactly as it does without a plan.
+
+  **Re-ask only what drifted (ONB-D9).** The plan was made at
+  `plan.analysis.sha`. When `HEAD` is that commit, every row above is
+  answered. When it is not, run
+  `git diff --name-only <plan.analysis.sha> HEAD`. Then re-ask only the gates
+  whose area that diff touches:
+  - a surface's own rows: anything under its `path`;
+  - environments, where they run, and aliases: deploy config (CI
+    workflows, Dockerfiles, compose and IaC files);
+  - `teamAgents`: agent config (`.claude/`, `.cursor/`, `AGENTS.md`,
+    `CLAUDE.md`).
+
+  A re-asked gate shows the plan's value as the default, and its receipt
+  carries the session's answer, not `source: webapp`. When the plan's
+  commit is not in this clone's history, the area cannot be known: re-ask
+  every row, with the plan's values as defaults.
+
 Then run the Step 0.1b tool-manifest check via
 `rollout-server_list_registered_tools`.
 
@@ -183,25 +255,25 @@ Then run the Step 0.1b tool-manifest check via
 | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ---- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **1 — Repo gate** | `the `question` tool`: _"Let FireWeave manage rollouts in this repo?"_ **No → exit, touch nothing.** |
 | **2 — Detect agents + language + deploy targets** | Detect coding-agent markers on disk (`CLAUDE.md`/`.claude/`, `.cursor/`, `.clinerules/`, `AGENTS.md`, `.github/copilot-instructions.md`, `GEMINI.md`, `.windsurfrules`). Detect surface(s) → tier + harness profile. Detect deploy targets → the secret destinations Step 3c offers. **Then ask the team (mandatory on first init):** one `the `question` tool` multi-select — _"Which coding agents will the team use in this repo?"_ **V1 full-materialize options:** `cursor`, `claude` only (HARD ORDER + hooks). Other hosts (`cline`, `codex`/`opencode`, `copilot`, `gemini`, `windsurf`) are **link-only experimental** — offer them only as an optional second question, never as a substitute for Cursor/Claude standing loops. Pre-select disk-detected `cursor`/`claude`. The user may add an agent **not** installed on this machine (e.g. Cursor laptop + teammates on Claude). Install set for Steps 7–8 = selection (not disk-only). **Hold** the selection in memory as `teamAgents` — **do not** persist to `project.json` yet (SCN-16; first **scaffold** write batch is Step 3e — Step 0c bind may already have written `project.json`). **Empty / cancelled selection:** re-ask once; if still empty → use **detected `cursor`/`claude` only** — never invent `["cursor","claude"]` when neither was detected and the user declined. Teammates who join later on an agent missing from `teamAgents` run `/fireweave:adopt` (harness-skipping). `--reinit` remains available for harness/env/credential refresh and may also restore agent loops — do not block it. |
-| **3 — Environment map + provider/connection resolution (capability-driven, D-PROVISION; SCN-16 gate-before-write)** | **Hard gates first — no disk.** **3a — Enumerate environments (in memory).** Via `rollout-server_guarded_call` → `list_project_environments` (fall back to reading `.fireweave/project.json`), read the full environment list and `defaultEnvironment`. Classify each environment into a **tier**: use the API's `tier`/`kind` field when present; otherwise treat `defaultEnvironment` as `dev` and confirm the **prod-tier set** with one `the `question` tool` (multi-select the environments that run real user traffic — e.g. `staging`, `production`). Build the env→tier **profile map** (becomes harness `FW_ENV_PROFILES` in Step 4) **in memory only** — **do not** persist `rolloutReady.environments` yet. **3b — Resolve capabilities per tier (do NOT wire prod from the dev env; still no disk).** **Read `automation` off the same `get_project_capabilities` result before anything else in this step** — `{ autoRampEnabled, … }`, the project-scoped release-automation settings. They are what decides whether an OPTIONAL capability is actually required here: `observability.query.metrics` iff `autoRampEnabled`. It defaults OFF, so on a fresh project the honest answer is usually "this addon is optional". **An unreadable `automation` block is a hard PARK — write nothing.** Absent (an fw-server that predates the optional-automation feature), a transport or auth failure, or a malformed block all mean _we could not ask_, and that is NOT the same answer as _the operator turned it off_. Never synthesize `{ autoRampEnabled: false }` from a failed read: that fabricates permission to skip an addon the project may genuinely require. Say which read failed, tell the user to restore connectivity or upgrade fw-server, and stop. For the **dev branch** the FireWeave local provider needs no vendor binding. For the **prod branch**, call `get_project_capabilities` with `{ projectId, environment: <prod-tier env> }` — the connected-vendor descriptor (`flag.control.posthogProjectId`, observability `{ vendor, connectionId }` (the QUERY leg — there is no OTLP target in it; see (2))) MUST come from the **prod-tier** environment, never the default/dev one. When multiple prod-tier environments exist, resolve each and hold each `posthogProjectId` in memory (manifest `harness.posthogProjectId` = the promotion target env; `verify_prod_path` accepts `targetEnvironment`). **Capability XOR (SCN-8 / INIT-B11 / FIR-290) — classify before writing anything.** After `get_project_capabilities`, per prod-tier env: (1) **Flags ready?** Do **not** trust `capabilities['feature-flags.flag.control']` alone — unbound feature-flags.\* are filled with managed `fireweave-posthog`. Observe **`config['feature-flags.flag.control'].posthogProjectId`** (env-level): missing/empty → flags **not ready**. (2) **Observability ready? — classify on the VENDOR, never on an endpoint.** FireWeave's observability binding is its **query leg**: how fw-server reads guardrail metrics back out of the vendor (`connectionId`). It does **not** carry the app's OTLP ingest target and never will — `otlpEndpoint` / `credentialEnvName` are not fields any capability descriptor produces (`packages/integration-openobserve/src/manifest.ts` declares `observability.query.*` and no ingest capability). The app's **export leg** — a direct app→vendor OTLP exporter — is **deployment config the operator supplies**, exactly like `FW_ATTEST_URL` / `FW_PROJECT_API_KEY`. So: any non-null `capabilities['observability.query.metrics' \| 'observability.query.traces' \| …]` → observability **bound** (read its `vendor`); **no** `observability.query.*` capability at all → **unbound**. **Matrix:** flags-not-ready (any obs) → hand off to fw-webapp **OAuth / flag connect** (browser-redirect, no CLI path) and **hard PARK — write nothing**. flags-ready + **obs-bound** → **detect how this repo already emits, per surface. Do NOT scaffold an exporter.** FireWeave does not own telemetry initialisation: a repo that has not chosen an observability SDK has not asked FireWeave to choose one for it, and an exporter FireWeave writes is one the team never reviewed and does not maintain. NEVER an `observability.ingest` proxy through FireWeave either. And **never** defer telemetry merely because the descriptor carries no endpoint: it never does, for anyone — that is the expected shape, not a gap (**FIR-354**).
+| **3 — Environment map + provider/connection resolution (capability-driven, D-PROVISION; SCN-16 gate-before-write)** | **Hard gates first — no disk.** **3a — Enumerate environments (in memory).** Via `rollout-server_guarded_call` → `list_project_environments` (fall back to reading `.fireweave/project.json`), read the full environment list and `defaultEnvironment`. Classify each environment into a **tier**: use the API's `tier`/`kind` field when present; otherwise treat `defaultEnvironment` as `dev` and confirm the **prod-tier set** with one `the `question` tool` (multi-select the environments that run real user traffic — e.g. `staging`, `production`). Build the env→tier **profile map** (becomes harness `FW_ENV_PROFILES` in Step 4) **in memory only** — **do not** persist `rolloutReady.environments` yet. **A package surface gets no profile map:** the start profile infers its own mode, so nothing is generated from this for it; the tier list still decides which destinations 3c asks about. **3b — Resolve capabilities per tier (do NOT wire prod from the dev env; still no disk).** **Read `automation` off the same `get_project_capabilities` result before anything else in this step** — `{ autoRampEnabled, … }`, the project-scoped release-automation settings. They are what decides whether an OPTIONAL family is actually required here: `observability` iff `autoRampEnabled`. It defaults OFF, so on a fresh project the honest answer is usually "this addon is optional". **An unreadable `automation` block is a hard PARK — write nothing.** Absent (an fw-server that predates the optional-automation feature), a transport or auth failure, or a malformed block all mean _we could not ask_, and that is NOT the same answer as _the operator turned it off_. Never synthesize `{ autoRampEnabled: false }` from a failed read: that fabricates permission to skip an addon the project may genuinely require. Say which read failed, tell the user to restore connectivity or upgrade fw-server, and stop. For the **dev branch** the FireWeave local provider needs no vendor binding. For the **prod branch**, call `get_project_capabilities` with `{ projectId, environment: <prod-tier env> }` — the family Binding (`bindings.observability` `{ integrationId, connectionId, state }` — the QUERY leg; there is no OTLP target in it; see (2)) MUST come from the **prod-tier** environment, never the default/dev one. When multiple prod-tier environments exist, resolve each. Do not write `harness.posthogProjectId`: every environment shares FireWeave's managed control-points project, so there is no per-environment PostHog project to record (09 §6 g). **Capability XOR (SCN-8 / INIT-B11 / FIR-290) — classify before writing anything.** After `get_project_capabilities`, per prod-tier env: (1) **Control points are always ready.** Every environment carries its control-points Binding from creation, served by FireWeave; there is nothing to check, connect or wait for, and no hand-off (09 §3, §6 g). (2) **Observability ready? — classify on the VENDOR, never on an endpoint.** FireWeave's observability binding is its **query leg**: how fw-server reads guardrail metrics back out of the vendor (`connectionId`). It does **not** carry the app's OTLP ingest target and never will — `otlpEndpoint` / `credentialEnvName` are not fields any capability descriptor produces (the OpenObserve Integration, `packages/integration-openobserve/src/index.ts`, serves `observability.*.query` capabilities and no ingest capability). The app's **export leg** — a direct app→vendor OTLP exporter — is **deployment config the operator supplies**, exactly like `FW_ATTEST_URL` / `FW_PROJECT_API_KEY`. So: the capabilities response is keyed by family — `bindings.observability.state` (the **Metrics** unit; Logs and Traces are separate units under `bindings.observability.signals`) is `bound` → observability **bound** (read its `integrationId`); `unbound` or `needs-attention` → **unbound**. **Matrix:** **obs-bound** → **detect how this repo already emits, per surface. Do NOT scaffold an exporter.** FireWeave does not own telemetry initialisation: a repo that has not chosen an observability SDK has not asked FireWeave to choose one for it, and an exporter FireWeave writes is one the team never reviewed and does not maintain. NEVER an `observability.ingest` proxy through FireWeave either. And **never** defer telemetry merely because the descriptor carries no endpoint: it never does, for anyone — that is the expected shape, not a gap (**FIR-354**).
 
 **What to detect, per surface — two answers from one read:**
 
 1. **Is telemetry initialised at all?** Look for the provider/client construction itself, not call sites — an OTel `MeterProvider`, a vendor SDK client, a StatsD connection, whatever this repo actually chose. **None found → tell the user which surface, and PARK.** Say plainly that without an initialised metrics client a rollout on that surface can only ramp manually, because there is nothing for the soak to query. Do not fill the hole.
-2. **What does it already emit?** Inventory the metric names this surface emits today, where, and what each measures. This is what makes REUSE possible at change time, and it has no other source — every `observability.query.*` capability takes a metric NAME, so nothing can list what exists. The repo is the only place to learn it.
+2. **What does it already emit?** Inventory the metric names this surface emits today, where, and what each measures. This is what makes REUSE possible at change time, and it has no other source — every observability query capability (`observability.metric.query`, …) takes a metric NAME, so nothing can list what exists. The repo is the only place to learn it.
 
-Both answers go into `.fireweave/agent-instructions.md` at Step 7 (**How to emit a metric**), and the resolved client is recorded as `surfaces[].metricsClient`. flags-ready + obs-unbound (**INIT-B11**) → print **"observability deferred — no observability vendor bound"**; `the `question` tool`: bind observability in the portal **now**, or **continue with deferred telemetry**. **What a refusal costs depends on `autoRampEnabled` (3b).** With auto-ramp **off**, observability is a genuinely optional capability and a deferral is the _expected_ outcome, not a failure — **soft-continue** (awaiting-user, never PARK), record the deferral in the session summary, and carry on. With auto-ramp **on**, the soak observer is what automatic advancement trusts, so an unbound metrics vendor is a broken promise rather than a preference: name auto-ramp as the reason it is required, and **Refuse/cancel → hard PARK — write nothing**. Never PARK a project for declining an addon it never enabled. On continue, write **no telemetry at all** — the harness never carried any and does not gain any here; **never** emit a half-wired OTLP exporter (empty endpoint, placeholder creds, or ingest proxy). Record the deferral in the session summary, naming what it costs: no bound metrics provider means no guardrail can be read back, so every rollout on this project ramps manually. Neither ready → same as flags-not-ready (connect flags first). Always offer the FireWeave local (in-memory + console) provider for the **dev** tier. **3c — Where the credentials will go (no secret is minted anywhere in this skill).** If the profile map has **no prod-tier environment** (dev-only), SKIP this question, print **"prod deferred — no prod-tier environment configured"**, and continue to **3d** (still no disk). Otherwise the **prod flags path** needs the runtime credential pair in every prod-tier deploy destination: `FW_API_URL` (the fw-server base URL) and `FW_PROJECT_API_KEY` (the bearer the harness sends to fw-server `/v1/flags/evaluate`) — plus the `PUBLIC_FW_*` pair when a web surface exists, whose key comes from a DIFFERENT panel. **Initialise issues neither.** Both come from the portal's **Project settings → API keys** page: `project-api-key_…` from **Project API keys** (server), `fw_public_…` from **Browser keys** (web). `the `question` tool`: for each prod-tier environment, where will it run? Offer only destination **kinds** from the tool union `github_actions`\|`vm_env`\|`docker_compose`\|`other` (map Step 2 labels such as Render → `other`/`vm_env` as appropriate). Default/dev-tier needs NO prod secrets. Confirm the user will set the pair in that destination after issuing the keys. **When 3b classified the env obs-bound**, the same destination also needs the OTLP **endpoint** + **credential** vars the Step 4 harness reads (FireWeave never holds these — the export leg is the operator's, see (2)); name them explicitly in the same question so the operator sets one set of secrets, once. **Refuse → soft-continue (awaiting-user, never PARK):** still call `record_rollout_env_contract` (it writes no secret — only `fireweave.md` and `.env.example` NAMES, which are exactly what an undecided operator needs later), keep every other scaffold, and record in the session summary that the prod branch will refuse to boot until the pair is set — the harness fails loudly, never silently, on missing prod credentials. **3d — Environment source (project-native, confirm-first; still no disk).** Determine how the harness learns the running environment NAME — see **Environment source** below. Prefer the project's existing env signal; only fall back to `FW_ENV`/`PUBLIC_FW_ENV`if the user opts in. Always`the `question` tool`before scaffolding. **3e — First scaffold write batch (commit-point; only after 3a–3d pass).** Track **scaffold/ship** paths in session-only`sessionWrote[]`(include`.fireweave/.cache/**` when present) — **never** the Step-0 bind `project.json`. (1) Call `rollout-server_record_rollout_env_contract` — it records the env contract, writes the committed `fireweave.md`, appends `.env.example` NAMES, and **mints nothing** — with `{ cwd: <same absolute workspace root as Step 0>, apiSurface: true, webSurface: true }` when both ts-server + web harnesses exist; `{ cwd, apiSurface: true }` for API-only (a `java` or `python` surface counts as API here); `{ cwd, webSurface: true, apiSurface: false }` for web-only. Pass `webappUrl` when known, so the operator gets a clickable link instead of a path. Call it **whether or not** a prod-tier env exists and whether or not 3c was declined: it is documentation, not provisioning. **On a missing tool → soft-continue**, naming the gap — a missing readme is a worse-documented repo, not a broken one. (There is no `{ ok: false }` PARK here any more: the call that could fail was the key mint, and it is gone.) (2) Then persist in-memory `rolloutReady.environments`, `defaultEnvironment`, resolved `posthogProjectId` fields, and Step 2 `teamAgents` into `.fireweave/project.json` (bind fields stay; do not rewrite org/project ids). **On success, verify on disk:** `fireweave.md` exists at the repo root, names every variable the DETECTED surfaces need, and contains **no** value matching a key prefix. Record it in `installedInto[]` — it is committed, not gitignored. Show the tool's `userPrompt`, which names the portal page, which panel issues which key, and the variables for this repo's surfaces. Then \*\*soft-continue (awaiting-user — not PARK)\*\* until the user confirms secrets are set — confirmation is on trust; the prod boot failing loudly on a missing pair is the real gate. |
-| **3f-pre — Detect surfaces, then let the user SELECT** | Run `rollout-server_detect_surfaces` with `{ cwd }` — and on a re-init also `{ declared: <project.json surfaces[]> }`. It is the deterministic replacement for the old "detect surface(s)" prose: topology -> language -> deployability -> app-vs-library via the dependency graph. **It PROPOSES; it never declares.** Every row carries a NAMED verdict and the evidence behind it. **Show the user every row, then ask** (one `the `question` tool` multi-select, gate `GATE-3F-SURFACE-SELECTION`): pre-tick exactly the rows with `preselect: true`, and leave `ambiguous`, `undecidable` and every library unticked but VISIBLE and selectable — a library the user knows is deployed must be choosable, and an ambiguous row is a question, not a guess. For an `ambiguous` row also show `alternatives` so the user can pick WHICH surface it is. **`unreadable` is not an error channel — print it.** A zone that could not be read contributes no surfaces, which looks exactly like a zone that has none; silently dropping it is how a whole package goes uninstrumented with a green run. If `unreadable` is non-empty, name each path and its reason before asking. **Never auto-declare on a weak verdict** and never declare a row the user did not tick. Record the selection with `write_confirmation_receipt` so the choice is auditable and a re-run is idempotent. **Re-init drift (`drift.needsReview === true`):** a surface that was declared before and is not detected now is **FLAGGED, never auto-retired** (gate `GATE-3F-VANISHED-SURFACES`). It has two indistinguishable causes — genuinely deleted, or invisible this run (moved directory, unreadable manifest, glob that stopped matching, missing submodule) — and the costs are asymmetric: a stale declaration is noise, a wrongly-retired one destroys an `sfc_` id the server issued and a committed harness still references, and it fails at SHIP, not here. Ask; do not decide. A moved surface appears as vanished + added rather than a silent rebind, which is deliberate — the `(surface, path)` pair is the same key the server matches a re-declare on. **Detection is advisory, not a gate:** if the tool is unavailable (older bundle), say so and fall back to asking the user to name the surfaces directly — never PARK on it, and never skip the ASK. |
-| **3f — Declare surfaces (server mints the IDs)** | **The server mints every `sfc_` id. You never do.** Run **exactly one** `fw repo declare-surfaces --project {projectId} --json --surfaces '[{"surface":"<ts-server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | web                          | python                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | go  | rust | dart | java>","path":"<harness module path>","entrypoint":"<app entrypoint>","rolloutCredentialEnv":"<FW_PROJECT_API_KEY | PUBLIC*FW_PROJECT_API_KEY>"}]'`carrying EVERY surface detected in Step 2 — **ONE call carrying EVERY surface**, never one call per surface (the server resolves them against one snapshot and refuses the whole set if any collides; two calls would let the first half land and the second conflict). Pass`surfaceId`only for a surface that already carries one in`project.json`— omit it and the server mints. Read the returned`surfaces[].surfaceId` and carry it into Step 4. **`path`must be the exact path Step 4 will write** — it is half the key the server matches a re-declare on, and both writers treat it as fill-only, so a predicted path that Step 4 then contradicts is sticky: the next`--reinit` declaring the real path misses the key and mints a SECOND id. If Step 4 ends up writing elsewhere, re-run this step with the real path before recording anything. **`outcome`per surface:**`minted`(new),`existing`(already on file for this project at this harness path — the healthy answer for a repo whose pointer was lost),`adopted`(your id, newly claimed),`already-registered`(your id, already ours). **Non-zero exit → PARK.** The command fails closed on an unreachable server, a 5xx, and on`conflict`(a`sfc*`id homed under another project — 409, and NOTHING was declared). There is no local-mint fallback and you must not invent one: an id the server never issued is exactly the unclaimed id this step exists to abolish, and it fails at ship instead, as`SURFACE_PROJECT_CONFLICT`. On `conflict`, name the colliding surface and its incumbent project to the user; the usual cause is a harness copied from another repo. When the failure is **`error: unknown command 'declare-surfaces'`** (exit 1), the repo holds a `fw`binary older than this command — the skill bundle and the CLI ship on independent release paths, so a current bundle with a stale binary is the ordinary case, not an exotic one. Tell the user to run`fw self-update` and re-run; do **not** read that error as a conflict, and do **not** work around it by minting an id locally. This call is also the first server-side evidence that initialise ran against this repository (it records the declaring repo), so it happens BEFORE any harness is written, not after. |
-| **4 — Scaffold harness (environment-keyed, both branches, D26)** | **Read the surface's templates from `harness/<surface>/` — resolved relative to THIS `SKILL.md`'s own directory, not the target repo — and generate EVERY file the surface's row lists**, never just one: a `ts-server` / `web` surface emits `fireweave/fw-harness.ts` **and** `fireweave/fw-providers.ts` (the harness imports `makeConnectedVendorProvider` / `makeDevProvider` from `./fw-providers` — a single-file harness does not resolve); a `python` surface emits three snake_case modules; a `java` surface emits the three `Fw*.java` classes into the app's `<base package>.fireweave` package (directory must match the package — rewrite the templates' `package fireweave;` line accordingly). Never hand-author a harness from this row's prose; see **Harness templates — where they live (Step 4)** below for the surface→dir map, the substitution list, and what to do when the templates are missing. Emit the `FW_ENV_PROFILES` map + `FW_DEFAULT_ENV` from Step 3a's env→tier profile (do NOT ship the template's placeholder rows unchanged — regenerate them from the project's environments). The harness resolves the running environment NAME (`resolveFwEnvName`), looks up its tier, and selects the flag provider: `dev` → the SDK's in-memory local mode; `prod` → the connected vendor's real provider. **The harness wires NO telemetry, in either tier.** FireWeave does not initialise an observability SDK in a repo — the templates carry none and `harness-templates.test.ts` asserts they never gain any. Step 3b's observability descriptor is the QUERY leg (how fw-server reads a guardrail metric back during a ramp), not an exporter for FireWeave to write; whether the app emits anything at all is DETECTED at Step 3b, never scaffolded. `isProd()` is retained ONLY as the unknown-env tier fallback and the token `verify_prod_path` greps for. The surface ids Step 3f's `fw repo declare-surfaces` returned are recorded in `project.json` `surfaces[].surfaceId` ONLY (Step 9 / see the `--reinit` surfaces section) — the harness carries no surface-ID block and no attestation wiring (deploy attestation is retired; merge attestation supersedes the boot beacon). **Never mint an `sfc_` id yourself** — not by hand, not with an inline script. The server owns `sfc_` identity (`surface_registry.surface_id` is a global primary key), and a locally-invented id is unclaimed and collides later as `SURFACE_PROJECT_CONFLICT`. The harness resolves `fwEnvName` from **the project's own env signal** — the generated `readEnvSignal()` + `FW_ENV_ALIASES` block (see **Environment source** below / Step 3d) — so **no FireWeave-specific `FW_ENV` / `PUBLIC_FW_ENV` is required**. Do NOT instruct the user to set `FW_ENV` per environment unless they explicitly chose the FireWeave-var option in Step 3d; `FW_ENV` is an optional override only. **TS-server `.mjs` harness:** patch the API package `build` script to copy compiled harness artifacts — see **API Docker build** below. |
-| **5 — Scaffold the tracker + `.fireweave/`** | **Every surface gets ONE tracker MODULE beside its harness in `fireweave/`, generated in Step 4 from that surface's own template** — `ts-server` / `web` → `fw-tracker.ts.tpl`, `python` → `fw_tracker.py.tpl`, `java` → `FwTracker.java.tpl`, `swift` → `FwTracker.swift.tpl`, `go` → `fw_tracker.go.tpl`, `rust` → `fw_tracker.rs.tpl`. One shape for every language: do NOT create the old `fw-tracker/` DIRECTORY anywhere. **Record each tracker on its surface's own entry — `surfaces[].trackerPath`** (or `rolloutReady.harnesses[].trackerPath`). **Do NOT write the legacy `rolloutReady.trackerPath` / `webTrackerPath`** — they are a two-surface model, superseded, and writing them creates a second source of truth that drifts. An unrecorded tracker downgrades a stamp BLOCK to a warn in `assert_dev_checklist` check 4. `.fireweave/PROVIDERS.md`. **Create NO `rollout-ready/`, NO `changelog/`, NO `_archive/`, and NO `config.json`** — see _What initialise puts in git_ above; manifests and stamps are server-owned and an empty directory is just a second place a future reader looks. Ensure `.fireweave/.gitignore` covers `local.json`, `.cache/`, `.queue/`, `.lock` (the queue tools write these lines — re-check if missing; **never** add an ignore rule that would let a `git clean` sweep `.queue/` unremarked, and never tell a user to delete `.queue/` as a cache remedy). Also write `.fireweave/hooks/rollout-build-gate.mjs` (see **Build-gate script** below) and `.fireweave/hooks/rollout-build-gate.sh` wrapper. |
-| **6 — Wire the harness into the app entrypoint** | Inject `await initFwHarness()` as the FIRST awaited statement in the detected entrypoint, and record the location in `project.json.rolloutReady.harnessEntrypoint`. `rollout-server_verify_prod_path` asserts this. |
-| **6b — Cohort identity wiring (always-on, INIT-S8)** | Locate (or, with the user's confirmation, wire) the identity bind for each surface — see **Cohort identity wiring** below. The bind runs **unconditionally** on auth / sign-out: never inside a flag branch, never behind a `// @fireweave-controlpoint` anchor. Record the identity module in `installedInto[]` when initialise writes it. |
+Both answers go into `.fireweave/agent-instructions.md` at Step 7 (**How to emit a metric**), and the resolved client is recorded as `surfaces[].metricsClient`. obs-unbound (**INIT-B11**) → print **"observability deferred — no observability vendor bound"**; `the `question` tool`: bind observability in the portal **now**, or **continue with deferred telemetry**. **What a refusal costs depends on `autoRampEnabled` (3b).** With auto-ramp **off**, observability is a genuinely optional capability and a deferral is the _expected_ outcome, not a failure — **soft-continue** (awaiting-user, never PARK), record the deferral in the session summary, and carry on. With auto-ramp **on**, the soak observer is what automatic advancement trusts, so an unbound metrics vendor is a broken promise rather than a preference: name auto-ramp as the reason it is required, and **Refuse/cancel → hard PARK — write nothing**. Never PARK a project for declining an addon it never enabled. On continue, write **no telemetry at all** — the harness never carried any and does not gain any here; **never** emit a half-wired OTLP exporter (empty endpoint, placeholder creds, or ingest proxy). Record the deferral in the session summary, naming what it costs: no bound metrics provider means no guardrail can be read back, so every rollout on this project ramps manually. Always offer the FireWeave local (in-memory + console) provider for the **dev** tier. **3c — Where the credentials will go (no secret is minted anywhere in this skill).** If the profile map has **no prod-tier environment** (dev-only), SKIP this question, print **"prod deferred — no prod-tier environment configured"**, and continue to **3d** (still no disk). Otherwise the **prod control-points path** needs the runtime credential pair in every prod-tier deploy destination: `FW_API_URL` (the fw-server base URL) and `FW_PROJECT_API_KEY` (the bearer the harness sends to fw-server `/v1/control-points/evaluate`) — plus the `PUBLIC_FW_*` pair when a web surface exists, whose key comes from a DIFFERENT panel. **Initialise issues neither.** Both come from the portal's **Project settings → API keys** page: `project-api-key_…` from **Project API keys** (server), `fw_public_…` from **Browser keys** (web). `the `question` tool`: for each prod-tier environment, where will it run? Offer only destination **kinds** from the tool union `github_actions`\|`vm_env`\|`docker_compose`\|`other` (map Step 2 labels such as Render → `other`/`vm_env` as appropriate). Default/dev-tier needs NO prod secrets. Confirm the user will set the pair in that destination after issuing the keys. **When 3b classified the env obs-bound**, the same destination also needs the OTLP **endpoint** + **credential** vars the Step 4 harness reads (FireWeave never holds these — the export leg is the operator's, see (2)); name them explicitly in the same question so the operator sets one set of secrets, once. **Refuse → soft-continue (awaiting-user, never PARK):** still call `record_rollout_env_contract` (it writes no secret — only `fireweave.md` and `.env.example` NAMES, which are exactly what an undecided operator needs later), keep every other scaffold, and record in the session summary that the prod branch will refuse to boot until the pair is set — the harness fails loudly, never silently, on missing prod credentials. **3c for a package surface (K11) — one variable, never a pair.** _Server profile_ (ts-server, Python, Go, Java, Rust, a Dart server, a Swift server): `FIREWEAVE_KEY`, the project key (`project-api-key_…`) — still issued by the operator in the portal's **Project API keys** panel, never by this skill — once per prod-tier destination. No `FW_API_URL`: the endpoint is the SDK channel Step 4's install records. Ask about `FIREWEAVE_URL` **only** when `project.json` `server.kind === 'custom'` (self-hosted or bench); it then goes beside the key, never into code. _Client profile_ (web, a Dart client, a Swift app — `detect_surfaces` reports `clientShipped: true` for them, and a client-shipped surface never gets a server key): `FIREWEAVE_BROWSER_KEY`, a browser key (`fw_public_…`), once per **BUILD** destination — CI, the host's build settings, a Docker build arg; Dart: CI `--dart-define` or a git-ignored `fireweave.env` define file; Swift: Info.plist `$(FIREWEAVE_BROWSER_KEY)` fed from a git-ignored `Fireweave.local.xcconfig` or CI. **Never a developer `.env`:** a key there turns every local run remote. Here, only ask where it goes; the key is issued after Step 3f mints the `surfaceId` it is labelled with (see 3f). **3d — Environment source (project-native, confirm-first; still no disk).** Determine how the harness learns the running environment NAME — see **Environment source** below. Prefer the project's existing env signal; only fall back to `FW_ENV`/`PUBLIC_FW_ENV`if the user opts in. Always`the `question` tool`before scaffolding. **A package surface gets ONE question instead:** does the app (web, Dart, Swift: the build) already name its environment in a variable other than `FIREWEAVE_ENV` / `APP_ENV` (ts-server: or `NODE_ENV`)? Yes → Step 4 passes it as the start call's `environment` option in that language's spelling (per-language reference), read from the app's own config; never hand the SDK an app-side default such as `"dev"`. No → leave the option out. **3e — First scaffold write batch (commit-point; only after 3a–3d pass).** Track **scaffold/ship** paths in session-only`sessionWrote[]`(include`.fireweave/.cache/**` when present) — **never** the Step-0 bind `project.json`. (1) Call `rollout-server_record_rollout_env_contract` — it records the env contract, writes the committed `fireweave.md`, appends `.env.example` NAMES, and **mints nothing** — with `{ cwd: <same absolute workspace root as Step 0>, apiSurface: true, webSurface: true }` when both ts-server + web harnesses exist; `{ cwd, apiSurface: true }` for API-only (a `java` or `python` surface counts as API here); `{ cwd, webSurface: true, apiSurface: false }` for web-only. Pass `webappUrl` when known, so the operator gets a clickable link instead of a path. **Package surfaces are not in this call** — they get their own call after Step 3f, which mints the `surfaceId` package mode needs (see 3f); this one covers scaffold surfaces, and a repo with none skips it. Call it **whether or not** a prod-tier env exists and whether or not 3c was declined: it is documentation, not provisioning. **On a missing tool → soft-continue**, naming the gap — a missing readme is a worse-documented repo, not a broken one. (There is no `{ ok: false }` PARK here any more: the call that could fail was the key mint, and it is gone.) (2) Then persist in-memory `rolloutReady.environments`, `defaultEnvironment`, resolved `posthogProjectId` fields, and Step 2 `teamAgents` into `.fireweave/project.json` (bind fields stay; do not rewrite org/project ids). **On success, verify on disk:** when a scaffold surface exists, `fireweave.md` exists at the repo root, names every variable the DETECTED surfaces need, and contains **no** value matching a key prefix. Record it in `installedInto[]` — it is committed, not gitignored. Show the tool's `userPrompt`, which names the portal page, which panel issues which key, and the variables for this repo's surfaces. Then \*\*soft-continue (awaiting-user — not PARK)\*\* until the user confirms secrets are set — confirmation is on trust; the prod boot failing loudly on a missing pair is the real gate. |
+| **3f-pre — Detect surfaces, then let the user SELECT** | Run `rollout-server_detect_surfaces` with `{ cwd }` — and on a re-init also `{ declared: <project.json surfaces[]> }`. It is the deterministic replacement for the old "detect surface(s)" prose: topology -> language -> deployability -> app-vs-library via the dependency graph. **It PROPOSES; it never declares.** Every row carries a NAMED verdict and the evidence behind it. **Show the user every row, then ask** (one `the `question` tool` multi-select, gate `GATE-3F-SURFACE-SELECTION`): pre-tick exactly the rows with `preselect: true`, and leave `ambiguous`, `undecidable` and every library unticked but VISIBLE and selectable — a library the user knows is deployed must be choosable, and an ambiguous row is a question, not a guess. For an `ambiguous` row also show `alternatives` so the user can pick WHICH surface it is. **`unreadable` is not an error channel — print it.** A zone that could not be read contributes no surfaces, which looks exactly like a zone that has none; silently dropping it is how a whole package goes uninstrumented with a green run. If `unreadable` is non-empty, name each path and its reason before asking. **Never auto-declare on a weak verdict** and never declare a row the user did not tick. Record the selection with `write_confirmation_receipt` so the choice is auditable and a re-run is idempotent. **Re-init drift (`drift.needsReview === true`):** a surface that was declared before and is not detected now is **FLAGGED, never auto-retired** (gate `GATE-3F-VANISHED-SURFACES`). It has two indistinguishable causes — genuinely deleted, or invisible this run (moved directory, unreadable manifest, glob that stopped matching, missing submodule) — and the costs are asymmetric: a stale declaration is noise, a wrongly-retired one destroys an `sfc_` id the server issued and a committed harness still references, and it fails at SHIP, not here. Ask; do not decide. A moved surface appears as vanished + added rather than a silent rebind, which is deliberate — the `(surface, path)` pair is the same key the server matches a re-declare on. **Detection is advisory, not a gate:** if the tool is unavailable (older bundle), say so and fall back to asking the user to name the surfaces directly — never PARK on it, and never skip the ASK. **For the start profile, each row also carries** `startProfile` (the suggested `server` / `client` profile — record it for `dart` and `swift`), `clientShipped` (always present; `true` means never wire a server key), `entrypoints[]` (`{ path, detail, clientShipped }` — where Step 6 puts the start call) and, for an Android module, a `refusal` to show rather than declare. Aggregator modules and client-shipped Go / Java / Rust binaries arrive with `preselect: false`. |
+| **3f — Declare surfaces (server mints the IDs)** | **The server mints every `sfc_` id. You never do.** Run **exactly one** `fw repo declare-surfaces --project {projectId} --json --surfaces '[{"surface":"<ts-server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | web                          | python                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | go  | rust | dart | java>","path":"<harness module path>","entrypoint":"<app entrypoint>","rolloutCredentialEnv":"<FW_PROJECT_API_KEY | PUBLIC*FW_PROJECT_API_KEY>"}]'`carrying EVERY surface detected in Step 2 — **ONE call carrying EVERY surface**, never one call per surface (the server resolves them against one snapshot and refuses the whole set if any collides; two calls would let the first half land and the second conflict). Pass`surfaceId`only for a surface that already carries one in`project.json`— omit it and the server mints. Read the returned`surfaces[].surfaceId` and carry it into Step 4. **`path`must be the exact path Step 4 will write** — it is half the key the server matches a re-declare on, and both writers treat it as fill-only, so a predicted path that Step 4 then contradicts is sticky: the next`--reinit` declaring the real path misses the key and mints a SECOND id. If Step 4 ends up writing elsewhere, re-run this step with the real path before recording anything. **`outcome`per surface:**`minted`(new),`existing`(already on file for this project at this harness path — the healthy answer for a repo whose pointer was lost),`adopted`(your id, newly claimed),`already-registered`(your id, already ours). **Non-zero exit → PARK.** The command fails closed on an unreachable server, a 5xx, and on`conflict`(a`sfc*`id homed under another project — 409, and NOTHING was declared). There is no local-mint fallback and you must not invent one: an id the server never issued is exactly the unclaimed id this step exists to abolish, and it fails at ship instead, as`SURFACE_PROJECT_CONFLICT`. On `conflict`, name the colliding surface and its incumbent project to the user; the usual cause is a harness copied from another repo. When the failure is **`error: unknown command 'declare-surfaces'`** (exit 1), the repo holds a `fw`binary older than this command — the skill bundle and the CLI ship on independent release paths, so a current bundle with a stale binary is the ordinary case, not an exotic one. Tell the user to run`fw self-update` and re-run; do **not** read that error as a conflict, and do **not** work around it by minting an id locally. This call is also the first server-side evidence that initialise ran against this repository (it records the declaring repo), so it happens BEFORE any harness is written, not after. **Package surfaces:** add `"harnessKind":"package"` to the entry, and set `path` (and `entrypoint`) to the **entrypoint file that carries the start call** — there is no harness module to name, so this is the exact file Step 6 edits — and `rolloutCredentialEnv` to `FIREWEAVE_KEY` (server profile) or `FIREWEAVE_BROWSER_KEY` (client profile). `startProfile` (`dart`, `swift`: `server` or `client`, from `detect_surfaces`) goes on the `project.json` entry. Existing scaffold surfaces are declared exactly as before, with no `harnessKind`. **Then issue each package client surface's browser key** with `rollout-server_issue_browser_key` `{ projectId, surfaceId, cwd }`: `issued` → hand `key` straight to the build destination the user named in 3c (offer to set it with that destination's own CLI, only on explicit confirmation), and never echo it into a file, a log or the session summary; `exists` → a key labelled for this surface is already active and its secret cannot be shown again, so the user reuses it from where they stored it, or — on explicit confirmation — re-run with `rotate: true`; `fallback-portal` → print its `reason` and send the user to the portal's **Browser keys** panel. A refusal is a soft-continue, never a PARK; any other tool error is reported as one, never silently replaced by the portal path. **Then record the package surfaces' env contract:** `rollout-server_record_rollout_env_contract` with `{ cwd, packageSurfaces: [{ surfaceId, surface, startProfile?, buildDestinations? }] }` (`startProfile` is required for `dart` / `swift`; `buildDestinations` are the client profile's 3c answers). A server profile gets `FIREWEAVE_KEY=` (plus `FIREWEAVE_URL=` only when `server.kind === 'custom'`) in `.env.example`; a client profile gets `FIREWEAVE_BROWSER_KEY` as a **build** variable with no `.env` entry; neither gets `fireweave.md`. Show the result's `packageSurfaces[]` (`credentialEnv`, `credentialKind`, `envExampleVars`, `buildVariables`, `buildDestinations`) to the user. It creates no `project.json` surface entry — that is Step 9's. |
+| **4 — Scaffold harness (environment-keyed, both branches, D26)** | **Package surface → no template.** Install the SDK (`resolve_sdk_install` with `harnessKind: 'package'`, plus `startProfile` for `dart` / `swift` — the four-step flow under **SDK dependencies**), then write that language's control-points file and start call from **Start profile — per-language reference** (web: also the build helper), with the Step 3d `environment` option when there was one; nothing else in this row applies to it. **Scaffold surface →** **Read the surface's templates from `harness/<surface>/` — resolved relative to THIS `SKILL.md`'s own directory, not the target repo — and generate EVERY file the surface's row lists**, never just one: a `ts-server` / `web` surface emits `fireweave/fw-harness.ts` **and** `fireweave/fw-providers.ts` (the harness imports `makeConnectedVendorProvider` / `makeDevProvider` from `./fw-providers` — a single-file harness does not resolve); a `python` surface emits three snake_case modules; a `java` surface emits the three `Fw*.java` classes into the app's `<base package>.fireweave` package (directory must match the package — rewrite the templates' `package fireweave;` line accordingly). Never hand-author a harness from this row's prose; see **Harness templates — where they live (Step 4)** below for the surface→dir map, the substitution list, and what to do when the templates are missing. Emit the `FW_ENV_PROFILES` map + `FW_DEFAULT_ENV` from Step 3a's env→tier profile (do NOT ship the template's placeholder rows unchanged — regenerate them from the project's environments). The harness resolves the running environment NAME (`resolveFwEnvName`), looks up its tier, and selects the control-point provider: `dev` → the SDK's in-memory local mode; `prod` → the connected vendor's real provider. **The harness wires NO telemetry, in either tier.** FireWeave does not initialise an observability SDK in a repo — the templates carry none and `harness-templates.test.ts` asserts they never gain any. Step 3b's observability descriptor is the QUERY leg (how fw-server reads a guardrail metric back during a ramp), not an exporter for FireWeave to write; whether the app emits anything at all is DETECTED at Step 3b, never scaffolded. `isProd()` is retained ONLY as the unknown-env tier fallback and the token `verify_prod_path` greps for. The surface ids Step 3f's `fw repo declare-surfaces` returned are recorded in `project.json` `surfaces[].surfaceId` ONLY (Step 9 / see the `--reinit` surfaces section) — the harness carries no surface-ID block and no attestation wiring (deploy attestation is retired; merge attestation supersedes the boot beacon). **Never mint an `sfc_` id yourself** — not by hand, not with an inline script. The server owns `sfc_` identity (`surface_registry.surface_id` is a global primary key), and a locally-invented id is unclaimed and collides later as `SURFACE_PROJECT_CONFLICT`. The harness resolves `fwEnvName` from **the project's own env signal** — the generated `readEnvSignal()` + `FW_ENV_ALIASES` block (see **Environment source** below / Step 3d) — so **no FireWeave-specific `FW_ENV` / `PUBLIC_FW_ENV` is required**. Do NOT instruct the user to set `FW_ENV` per environment unless they explicitly chose the FireWeave-var option in Step 3d; `FW_ENV` is an optional override only. **TS-server `.mjs` harness:** patch the API package `build` script to copy compiled harness artifacts — see **API Docker build** below. |
+| **5 — Scaffold the tracker + `.fireweave/`** | **Package surface (D7):** create its stamps file empty, in exactly this shape — `.fireweave/stamps.ts` (ts-server, web): `export const FW_STAMPS = [];` with the same entry shape as a scaffold `fw-tracker`, surface-tagged; `.fireweave/stamps.py` (Python): `FW_STAMPS: list[str] = []`; `.fireweave/stamps.json` (Go, Java, Rust, Dart, Swift — a file no build compiles): `{ "FW_STAMPS": [] }`, entries `"stmp_…"`. Two surfaces that map to the same file share it. Record it as that surface's `surfaces[].trackerPath` (top-level `surfaces[]`, which `reconcile` and `assert_dev_checklist` read), and write no tracker module and no `.fireweave/PROVIDERS.md` for it. **Scaffold surface:** **Every surface gets ONE tracker MODULE beside its harness in `fireweave/` (`fireweave_harness/` for Python), generated in Step 4 from that surface's own template** — `ts-server` / `web` → `fw-tracker.ts.tpl`, `python` → `fw_tracker.py.tpl`, `java` → `FwTracker.java.tpl`, `swift` → `FwTracker.swift.tpl`, `go` → `fw_tracker.go.tpl`, `rust` → `fw_tracker.rs.tpl`. One shape for every language: do NOT create the old `fw-tracker/` DIRECTORY anywhere. **Record each tracker on its surface's own entry — `surfaces[].trackerPath`** (or `rolloutReady.harnesses[].trackerPath`). **Do NOT write the legacy `rolloutReady.trackerPath` / `webTrackerPath`** — they are a two-surface model, superseded, and writing them creates a second source of truth that drifts. An unrecorded tracker downgrades a stamp BLOCK to a warn in `assert_dev_checklist` check 4. `.fireweave/PROVIDERS.md`. **Create NO `rollout-ready/`, NO `changelog/`, NO `_archive/`, and NO `config.json`** — see _What initialise puts in git_ above; manifests and stamps are server-owned and an empty directory is just a second place a future reader looks. Ensure `.fireweave/.gitignore` covers `local.json`, `.cache/`, `.queue/`, `.lock` (the queue tools write these lines — re-check if missing; **never** add an ignore rule that would let a `git clean` sweep `.queue/` unremarked, and never tell a user to delete `.queue/` as a cache remedy). Also write `.fireweave/hooks/rollout-build-gate.mjs` (see **Build-gate script** below) and `.fireweave/hooks/rollout-build-gate.sh` wrapper. |
+| **6 — Wire the harness into the app entrypoint** | **Package surface:** put the start call FIRST, exactly as the per-language reference's **Start call** column says — exactly one start per process, nothing FireWeave-related before it, never `initFwHarness()`. **Scaffold surface:** Inject `await initFwHarness()` as the FIRST awaited statement in the detected entrypoint, and record the location in `project.json.rolloutReady.harnessEntrypoint`. `rollout-server_verify_prod_path` asserts this. |
+| **6b — Cohort identity wiring (always-on, INIT-S8)** | Locate (or, with the user's confirmation, wire) the identity bind for each surface — see **Cohort identity wiring** below. The bind runs **unconditionally** on auth / sign-out: never inside a control-point branch, never behind a `// @fireweave-controlpoint` anchor. Record the identity module in `installedInto[]` when initialise writes it. A package surface uses its SDK's own call (per-language reference, **Identity** column). |
 | **7 — Standing instructions + agent links** | Write `.fireweave/agent-instructions.md` (see **Agent instructions template** below). Link / upsert standing surfaces for **every agent in Step 2 `teamAgents`**, not only folders present on this machine. **Do not** rely on a one-line link alone: Step 7b is mandatory when `cursor` ∈ `teamAgents`, Step 7c is mandatory when `claude` ∈ `teamAgents`. Each selected host needs its always-on standing surface, not just a link. |
 | **7b — Cursor dev loop (when `cursor` ∈ `teamAgents`)** | Write `.cursor/rules/fireweave-rollout-ready.mdc` (always-on rule; see template) — create `.cursor/rules/` if missing. **HARD — Cursor plugin MCP only when this host is Cursor:** do **NOT** write or merge `.cursor/mcp.json`, do **NOT** copy `mcp/rollout-server/` into the repo, do **NOT** download `bin/server-*`. Confirm `list_registered_tools` via the Cursor FireWeave plugin **only when the current host is Cursor**. If initialise runs on a non-Cursor host but `cursor` was selected for teammates, still write the rule/hooks/skills artifacts so they are committed — that does **not** change MCP transport. **`mcp.mode` is host-scoped, not teamAgents-scoped:** set `rolloutReady.mcp.mode = "cursor-plugin"` **only when this host is Cursor**; otherwise set `plugin-launcher` / `cli-install` (and tell non-Cursor hosts to run `fw mcp install`). Never set `cursor-plugin` merely because `cursor` ∈ `teamAgents` for absent teammates. If repo-local `mcp/rollout-server/launcher.sh` already exists on a Cursor host → delete it (and empty workspace `.cursor/mcp.json` that points at it). Ensure the FireWeave skills exist under `.cursor/skills/` (copy from the installed plugin bundle only — includes `adopt` + `feedback`). **Copy each skill's WHOLE directory, never `SKILL.md` alone** — initialise's `harness/**` templates live beside it and Step 4 cannot run without them (C27). Record every path in `installedInto[]` — never include `mcp/`. |
 | **7c — Claude Code dev loop (when `claude` ∈ `teamAgents`)** | Symmetric with 7b — the standing rule for Claude Code is the always-loaded `CLAUDE.md` block (Claude has no `alwaysApply` rule file; `CLAUDE.md` IS the always-on surface). **Mandatory when Claude is selected — even if `.claude/` is absent on this laptop:** create `.claude/hooks/` as needed; upsert the **FireWeave rollout-ready HARD ORDER block** into `CLAUDE.md` (see **CLAUDE.md rollout-ready block** template) — a full HARD ORDER, not the one-line pointer. The one-line link alone is NOT sufficient for Claude Code (it under-triggers on large feature prompts). Record `CLAUDE.md` in `installedInto[]`. |
 | **8 — Hooks** | **Cursor** (when `cursor` ∈ `teamAgents`): write `.cursor/hooks.json` + executable scripts under `.cursor/hooks/` (see **Cursor hooks**). **Claude Code** (when `claude` ∈ `teamAgents` — MANDATORY, not optional, even if `.claude/` was missing before this run): write executable `.claude/hooks/rollout-intent-gate.sh` (see **Claude Code hook**) and wire `UserPromptSubmit` + `SessionStart` in `.claude/settings.json` using a **fail-open guarded command** so a missing script can never error the hook. **Commit both `.claude/settings.json` AND the hook script** — settings without the script is the drift that silently no-ops the reminder on fresh checkouts/branches. Non-Cursor hosts that need an install-time launcher use `fw mcp install` (`mcp.mode: "cli-install"` / `"plugin-launcher"`) — never Cursor's happy path. |
-| **9 — Record + verify** | **Repo-scoped config goes to the server, not into the file.** Make ONE `rollout-server_update_repo_state` call carrying every field that surface owns — `sourceRoots`, `scanExclude`, `teamAgents` (Step 2), `installedInto[]`, `language`, `strategy`, `mcp.mode` (**host transport only** — `cursor-plugin` when this host is Cursor; else `plugin-launcher`/`cli-install` — never derived solely from `teamAgents`), `sdkDev`, `deploySdkVersion`. **Never hand-write those nine into `project.json`:** one writer, one merge policy. Set fields UNION (so two concurrent `--reinit`s cannot clobber each other) and the FIRST write materialises the full derived set — which is why a partial first call is a one-way door for anchor-scan scope. The write is **online-only and fails closed** (a queued field merge would union against a row that moved underneath it); on `outcome: 'refused'` → PARK, do not fall back to editing the file. The tool writes **no file at all** — the nine fields live only in the server row, so do not look for them in `project.json` afterwards and do not hand-write them there when they are absent. **The pointer keeps only what has no server home:** identity (`select_project` owns `orgId`/`projectId`/`projectName`/`projects{}`), `server.url`, top-level `surfaces[]` (the `sfc_` ids Step 3f's server declaration returned + per-surface `path`/`entrypoint`/`rolloutCredentialEnv`), `defaultEnvironment`, and the residual `rolloutReady` keys listed under **Pointer residue** below. **Add nothing else to `rolloutReady`.** Keep `environments` in sync with the harness `FW_ENV_PROFILES`. **Reconcile manifest credential env:** resolve each feature's manifest through the seam and re-author it with `rollout-server_upsert_rollout_manifest` when `harness.rolloutCredentialEnv` does not match the surface — `ts-server` → `FW_PROJECT_API_KEY`, `web` → `PUBLIC_FW_PROJECT_API_KEY`, `python`/`java` → `FW_PROJECT_API_KEY` (see **Credential env canon**); never edit a manifest file in place. Run `rollout-server_detect_rollout_ready` (anchor scan works). Run `rollout-server_reconcile` with `phase: "build"` (must pass when no orphan anchors exist under `sourceRoots`). **Smoke:** run `rollout-server_verify_prod_path` on one manifest per surface present with `{ feature, projectId }` only — **do not pass `targetEnvironment`** (tool matches `harness.posthogProjectId` / `promotionEnvironment`); fix any **fail** before declaring done. **Hard assert (no credential on disk):** `fireweave.md` exists at the repo root and no file under the workspace contains a `project-api-key_` / `fw_public_` / `fw_ingest_pub_` prefix followed by key material. Initialise mints nothing, so a match means a credential was pasted into the repo — stop and tell the user to move it to the deploy environment and rotate. **Hard assert (surface IDs are the server's):** every `surfaceId` in `project.json` `surfaces[]` MUST appear in Step 3f's declare output (harnesses carry no surface-ID block — the pointer is the only local record). Fix by re-running `fw repo declare-surfaces` and using what it returns — **never by minting an id** to make the grep pass. **Hard assert (identity never flag-gated — INIT-S8):** no identity call (`identify` / `reset` / `setContext({ targetingKey })` / `reloadFeatureFlags` / `reload*Flags` / `bind*User`) may sit inside a flag branch or under a `// @fireweave-controlpoint` anchor. `rollout-server_assert_dev_checklist` enforces this on every feature; at init, spot-check the surface's auth path — a flag cannot gate the targeting-key bind it depends on. Fix by hoisting the bind out of the branch before declaring done. The gate ships with the FireWeave plugin publish — standing `.cursor/skills` copies refresh via adopt/`--reinit` from the installed bundle. **Hard assert (Cursor):** `mcp/` must not exist under the repo when `mcp.mode` is `cursor-plugin`. **Hard assert (feedback reachable):** the `feedback` skill exists in the installed set for every agent in `teamAgents`. It is the only path a user has to report that FireWeave itself misbehaved, so a repo that initialises without it is a repo whose failures are invisible. **Hard assert (Claude Code) — when `claude` ∈ `teamAgents`:** (a) `CLAUDE.md` contains the rollout-ready HARD ORDER block (not just the one-line link); (b) `.claude/hooks/rollout-intent-gate.sh` exists AND is executable (`chmod +x`); (c) `.claude/settings.json` references it under `UserPromptSubmit` and `SessionStart` with the fail-open guarded command; (d) `git check-ignore` does NOT match the hook script or `CLAUDE.md` (they MUST be committable — an ignored/uncommitted hook is the drift that no-ops on fresh checkouts). Fix any miss before declaring done. **Report the harness — FIR-359:** once the smoke above passes, send the report **over the CLI profile**, not the project API key: `fw api POST /v1/projects/{projectId}/harness-migration --body '{"status":"migrated","sdkVersion":"<@fireweaveai/server-sdk version installed>","surfaces":[<every surface wired this run>]}'`. Use `fw api` (authenticated by the Step-0 profile) rather than a raw `Authorization: Bearer {FW_PROJECT_API_KEY}` POST — `FW_PROJECT_API_KEY` is the runtime ingest plane, and this endpoint does not accept it (`migrate-harness` reports the same way) — **a dev-only project never gets that key.** Initialise never holds `FW_PROJECT_API_KEY` at all — the operator issues it in the portal — so a key-bearing POST has nothing to authenticate with; the profile is always present because Step 0 gated on it. This is not optional bookkeeping: the project page pairs this report against the flag binding, and auto-bind puts every new environment on managed PostHog, so a project that never reports sits permanently in "FireWeave ramps flags the running app does not read" with no action that clears it. Report `partial` — naming the gap in `notes` — when any detected surface was left reading its provider directly (e.g. a Go surface, whose prod path is still deferred); report `migrated` only when every surface wired this run reads through FireWeave. **Never report `migrated` to make the page green** — the page exists to show when the two halves disagree. On a non-2xx, say so in the session summary and name the project page as still-warning; do NOT PARK (the harness itself is wired and committed — an unreported success is a stale page, not a broken repo). **Reload notice — INIT-A4:** name **only** the agents whose **reloadable standing-loop artifacts were written this run** (derive from paths appended to `installedInto[]` this run — e.g. Cursor rule/hooks → reload Cursor; Claude HARD ORDER + hooks → next Claude session). Do **not** name link-only / experimental hosts that got only a thin agent-instructions link (nothing to reload). Never hardcode Cursor. Mention `/fireweave:adopt` for teammates who later use an agent not in `teamAgents` (`--reinit` may also restore loops — prefer `adopt` for standing-loop-only gaps). |
+| **9 — Record + verify** | **Repo-scoped config goes to the server, not into the file.** Make ONE `rollout-server_update_repo_state` call carrying every field that surface owns — `sourceRoots`, `scanExclude`, `teamAgents` (Step 2), `installedInto[]`, `language`, `strategy`, `mcp.mode` (**host transport only** — `cursor-plugin` when this host is Cursor; else `plugin-launcher`/`cli-install` — never derived solely from `teamAgents`), `sdkDev`, `deploySdkVersion`. **Never hand-write those nine into `project.json`:** one writer, one merge policy. Set fields UNION (so two concurrent `--reinit`s cannot clobber each other) and the FIRST write materialises the full derived set — which is why a partial first call is a one-way door for anchor-scan scope. The write is **online-only and fails closed** (a queued field merge would union against a row that moved underneath it); on `outcome: 'refused'` → PARK, do not fall back to editing the file. The tool writes **no file at all** — the nine fields live only in the server row, so do not look for them in `project.json` afterwards and do not hand-write them there when they are absent. **The pointer keeps only what has no server home:** identity (`select_project` owns `orgId`/`projectId`/`projectName`/`projects{}`), `server.url`, top-level `surfaces[]` (the `sfc_` ids Step 3f's server declaration returned + per-surface `path`/`entrypoint`/`rolloutCredentialEnv`), `defaultEnvironment`, and the residual `rolloutReady` keys listed under **Pointer residue** below. **Add nothing else to `rolloutReady`.** Keep `environments` in sync with the harness `FW_ENV_PROFILES` (scaffold surfaces). A package surface's entry carries `harnessKind: 'package'`, `startProfile` (`dart`, `swift`), `sdk: { name, version, channel }` from the install, its stamps file as `trackerPath`, and `rolloutCredentialEnv`. **Reconcile manifest credential env:** resolve each feature's manifest through the seam and re-author it with `rollout-server_upsert_rollout_manifest` when `harness.rolloutCredentialEnv` does not match the surface — `ts-server` → `FW_PROJECT_API_KEY`, `web` → `PUBLIC_FW_PROJECT_API_KEY`, `python`/`java` → `FW_PROJECT_API_KEY`; a package surface → `FIREWEAVE_KEY` (server profile) or `FIREWEAVE_BROWSER_KEY` (client profile) (see **Credential env canon**); never edit a manifest file in place. Run `rollout-server_detect_rollout_ready` (anchor scan works). Run `rollout-server_reconcile` with `phase: "build"` (must pass when no orphan anchors exist under `sourceRoots`). **Smoke:** run `rollout-server_verify_prod_path` on one manifest per surface present with `{ feature }`; fix any **fail** before declaring done. A package surface runs the package check set (`sdk-floor`, `start-first`, `one-start`, `no-hand-rolled-init`, `key-family`, `start-profile`, plus its language's own); a `warn` is advisory and is reported, not fixed by force. **Hard assert (no credential on disk):** `fireweave.md` exists at the repo root when a scaffold surface exists, and no tracked or un-ignored file under the workspace contains a `project-api-key_` / `fw_public_` / `fw_ingest_pub_` prefix followed by key material. Initialise never writes a key into the workspace — an issued browser key goes straight to its build destination — so a match means a credential was pasted into the repo — stop and tell the user to move it to the deploy environment and rotate. **Hard assert (surface IDs are the server's):** every `surfaceId` in `project.json` `surfaces[]` MUST appear in Step 3f's declare output (harnesses carry no surface-ID block — the pointer is the only local record). Fix by re-running `fw repo declare-surfaces` and using what it returns — **never by minting an id** to make the grep pass. **Hard assert (identity never control-point-gated — INIT-S8):** no identity call (`identify` / `reset` / `setContext({ targetingKey })` / `reloadFeatureFlags` / `reload*Flags` / `bind*User`) may sit inside a control-point branch or under a `// @fireweave-controlpoint` anchor. `rollout-server_assert_dev_checklist` enforces this on every feature; at init, spot-check the surface's auth path — a control point cannot gate the targeting-key bind it depends on. Fix by hoisting the bind out of the branch before declaring done. The gate ships with the FireWeave plugin publish — standing `.cursor/skills` copies refresh via adopt/`--reinit` from the installed bundle. **Hard assert (Cursor):** `mcp/` must not exist under the repo when `mcp.mode` is `cursor-plugin`. **Hard assert (feedback reachable):** the `feedback` skill exists in the installed set for every agent in `teamAgents`. It is the only path a user has to report that FireWeave itself misbehaved, so a repo that initialises without it is a repo whose failures are invisible. **Hard assert (Claude Code) — when `claude` ∈ `teamAgents`:** (a) `CLAUDE.md` contains the rollout-ready HARD ORDER block (not just the one-line link); (b) `.claude/hooks/rollout-intent-gate.sh` exists AND is executable (`chmod +x`); (c) `.claude/settings.json` references it under `UserPromptSubmit` and `SessionStart` with the fail-open guarded command; (d) `git check-ignore` does NOT match the hook script or `CLAUDE.md` (they MUST be committable — an ignored/uncommitted hook is the drift that no-ops on fresh checkouts). Fix any miss before declaring done. **Report the harness — FIR-359:** once the smoke above passes, send the report **over the CLI profile**, not the project API key: `fw api POST /v1/projects/{projectId}/harness-migration --body '{"status":"migrated","repo":"<owner/name>","sdkVersion":"<@fireweaveai/server-sdk version installed>","surfaces":[<every surface wired this run>]}'`. `repo` is this repository's `owner/name` (the one Step 0d asked about): the report is per repository, and it is what marks this repository initialised and closes any setup PR FireWeave opened for it. Use `fw api` (authenticated by the Step-0 profile) rather than a raw `Authorization: Bearer {FW_PROJECT_API_KEY}` POST — `FW_PROJECT_API_KEY` is the runtime ingest plane, and this endpoint does not accept it (`migrate-harness` reports the same way) — **a dev-only project never gets that key.** Initialise never holds `FW_PROJECT_API_KEY` at all — the operator issues it in the portal — so a key-bearing POST has nothing to authenticate with; the profile is always present because Step 0 gated on it. This is not optional bookkeeping: the project page pairs this report against the control-points binding, and auto-bind puts every new environment on managed PostHog, so a project that never reports sits permanently in "FireWeave ramps control points the running app does not read" with no action that clears it. Report `partial` — naming the gap in `notes` — when any detected surface was left reading its provider directly (e.g. a surface whose SDK install `resolve_sdk_install` refused); report `migrated` only when every surface wired this run reads through FireWeave. **Never report `migrated` to make the page green** — the page exists to show when the two halves disagree. On a non-2xx, say so in the session summary and name the project page as still-warning; do NOT PARK (the harness itself is wired and committed — an unreported success is a stale page, not a broken repo). **Reload notice — INIT-A4:** name **only** the agents whose **reloadable standing-loop artifacts were written this run** (derive from paths appended to `installedInto[]` this run — e.g. Cursor rule/hooks → reload Cursor; Claude HARD ORDER + hooks → next Claude session). Do **not** name link-only / experimental hosts that got only a thin agent-instructions link (nothing to reload). Never hardcode Cursor. Mention `/fireweave:adopt` for teammates who later use an agent not in `teamAgents` (`--reinit` may also restore loops — prefer `adopt` for standing-loop-only gaps). |
 
 **`--reinit`** re-detects agent/language **and re-enumerates environments** (regenerates the env→tier profile map / harness `FW_ENV_PROFILES` from `list_project_environments`); re-resolves the prod-tier capability bindings; **always re-runs** `record_rollout_env_contract` when a prod-tier env exists (refreshes `fireweave.md` + `.env.example`; it mints nothing, so there is no key to rotate); refreshes harness/tracker/strategy, manifest credential-env fields, API build script, **and the dev-loop artifacts for the resolved refresh set** — Cursor (rule/hooks) when `cursor` ∈ set AND Claude Code (`CLAUDE.md` block + `.claude/hooks/rollout-intent-gate.sh` + `.claude/settings.json` wiring) when `claude` ∈ set. **Refresh-set resolution (N1 — absent ≠ empty):**
 
@@ -209,6 +281,13 @@ Both answers go into `.fireweave/agent-instructions.md` at Step 7 (**How to emit
 2. If `teamAgents` is **absent** (pre-teamAgents initialisation) → **never** treat that as `[]`. Derive the set from (a) agents implied by remaining `installedInto[]` paths (e.g. `.cursor/rules/fireweave-rollout-ready.mdc` / `.cursor/hooks/fireweave-rollout-*.sh` → `cursor`; `CLAUDE.md` / `.claude/hooks/rollout-intent-gate.sh` / `.claude/settings.json` → `claude`) and (b) disk markers that already carry FireWeave standing-loop artifacts (HARD ORDER block / FireWeave rule / intent-gate — **not** bare `.cursor/` or `.claude/` alone). Write the resolved sorted set back as `teamAgents`, then refresh that set.
 
 Reinit MUST re-create a missing/ignored Claude hook script and re-assert the `CLAUDE.md` block when `claude` ∈ the resolved set (do not skip on "settings entry already present" — verify the script file itself exists and is executable). Reinit **also mints surface IDs and writes the canonical top-level `surfaces[]`** into `project.json` — see **`--reinit` — mint surface IDs + write `surfaces[]`** below. **Reinit MUST refresh the copied FireWeave skill directories** — see **Skill copies are copies (C27)** below; a repo whose data migrated while its skill copies stayed stale is the worst failure mode this skill has. Reinit **never touches change stamps or manifests**: both are server-owned, `--reinit` is a harness/loop refresh, and re-authoring a manifest it did not author would displace a contract.
+
+**`--reinit` on a package surface** re-runs `resolve_sdk_install` (`harnessKind:
+'package'`) for the 3.0.0 floor, re-checks that the start call is still first and
+the only one, and re-runs `record_rollout_env_contract` in package mode. It
+**never** rewrites the control-points file, the start call's options or the web
+build helper's options — they are the user's. It never moves a scaffold surface onto
+the start profile; that is `/fireweave:migrate-harness`.
 
 **`--reinit` is idempotent, and there is only one path.** It used to branch on whether the pointer carried a `rolloutReady` block — writing the repo-scoped config back into the file in one case and not the other. `update_repo_state` writes **no file at all** now, in any repo, so there is nothing to discriminate: it sends the delta, fw-server merges it, and `fw sync` is how this worktree sees the result. **Never write `version: 3`** — `ProjectBindingSchema` accepts only `1 | 2`, so a `3` makes the pointer unparseable and every reader treats the repo as unbound. A second `--reinit` changes nothing but re-minted-nothing surface ids and refreshed loop artifacts.
 
@@ -249,7 +328,7 @@ regression**, because a field with two homes is the drift ADR-019 exists to kill
 | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
 | `surfaces[].trackerPath` (canonical) · `trackerPath` / `webTrackerPath` (legacy, two-surface)                                                   | Read by `assert_dev_checklist` + `reconcile` to find `FW_STAMPS`. Per-surface is canonical; the legacy pair is a fallback for pre-migration repos.      | Step 5 / 9                    |
 | `harnessPath` / `harnessEntrypoint` / `harnesses[]`                                                                                             | Read by `verify_prod_path` and the `normalizeSurfaces` shim; the canonical successor is top-level `surfaces[]`, kept side by side as the rollback path. | Step 4 / 6 / 9                |
-| `environments` / `defaultEnvironment` / `promotionEnvironment` / `posthogProjectId`                                                             | Read by `resolve-project-environment` + `verify_prod_path` to pick the prod-tier binding.                                                               | Step 3a / 9                   |
+| `environments` / `defaultEnvironment` / `promotionEnvironment`                                                                                  | Read by `resolve-project-environment` to pick the prod-tier environment.                                                                                | Step 3a / 9                   |
 | `attestUrl` (legacy KEY name; the VALUE is the fw-server base URL that feeds `FW_API_URL`) / `rolloutCredentialEnv` / `webRolloutCredentialEnv` | `repo_state` has **no column** for them — `update_repo_state` hard-errors if you try.                                                                   | `record_rollout_env_contract` |
 
 **`initialized` is gone — do not write it back.** It used to head this table, and it
@@ -413,7 +492,7 @@ all under `version: 2`:
     "webRolloutCredentialEnv": "PUBLIC_FW_PROJECT_API_KEY",
     "environments": {
       "development": { "tier": "dev" },
-      "production": { "tier": "prod", "posthogProjectId": "12345" }
+      "production": { "tier": "prod" }
     }
   }
 }
@@ -431,16 +510,29 @@ schema's shape while naming an id the server never issued.
 
 ## Prod runtime credentials (Step 3 — URL + key, same treatment)
 
-`FW_API_URL` (the fw-server base URL) and `FW_PROJECT_API_KEY` (the bearer the prod flags path sends to fw-server `/v1/flags/evaluate`, `/v1/capture`, `/v1/targets/register`) are a **pair**. Initialise documents them together — never one without the other. Nothing about this pair is attestation: it is how the PROD FLAGS branch authenticates.
+**A package surface needs ONE variable, not a pair (K11).** A server profile reads
+`FIREWEAVE_KEY` (the project key, `project-api-key_…`, issued in the portal's
+**Project API keys** panel — never by this skill) from the process environment, set
+once per prod-tier destination; the endpoint is the SDK channel, so there is no
+`FW_API_URL`, and `FIREWEAVE_URL` exists only when `server.kind === 'custom'`. A
+client profile (web, a Dart client, a Swift app) is built with
+`FIREWEAVE_BROWSER_KEY` (a browser key, `fw_public_…`, from
+`rollout-server_issue_browser_key`, or the **Browser keys** panel when the tool
+answers `fallback-portal`), set once per **build** destination and never in a
+developer `.env`. The start profile refuses the wrong family at start: a browser key
+in a server, a project key in a client. The rest of this section is the scaffold
+pair.
 
-**Initialise mints nothing and writes no secret.** Both key families are issued by the operator in the portal, on one page — **Project settings → API keys** (`/projects/<projectId>/settings?tab=api-keys`) — which carries a panel for each:
+`FW_API_URL` (the fw-server base URL) and `FW_PROJECT_API_KEY` (the bearer the prod control-points path sends to fw-server `/v1/control-points/evaluate`, `/v1/capture`, `/v1/targets/register`) are a **pair**. Initialise documents them together — never one without the other. Nothing about this pair is attestation: it is how the PROD CONTROL-POINTS branch authenticates.
 
-| Panel                | Issues              | Variable                    | Where it may go                                                            |
-| -------------------- | ------------------- | --------------------------- | -------------------------------------------------------------------------- |
-| **Project API keys** | `project-api-key_…` | `FW_PROJECT_API_KEY`        | Server-side only — never a browser bundle, never a commit                  |
-| **Browser keys**     | `fw_public_…`       | `PUBLIC_FW_PROJECT_API_KEY` | Designed to ship in a web bundle; scoped `flags:evaluate` + `events:write` |
+**Initialise writes no secret, and mints no project key.** Both key families can be issued by the operator in the portal, on one page — **Project settings → API keys** (`/projects/<projectId>/settings?tab=api-keys`) — which carries a panel for each:
 
-**The two are not interchangeable and never share a key.** A web surface takes the browser key; putting the attest-family key in a bundle hands out an unscoped credential. `runtime-proxy/AUTH.md` is the source of truth for the families.
+| Panel                | Issues              | Variable                                                                   | Where it may go                                                                       |
+| -------------------- | ------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Project API keys** | `project-api-key_…` | `FIREWEAVE_KEY` (package) · `FW_PROJECT_API_KEY` (scaffold)                | Server-side only — never a browser bundle, never a commit                             |
+| **Browser keys**     | `fw_public_…`       | `FIREWEAVE_BROWSER_KEY` (package) · `PUBLIC_FW_PROJECT_API_KEY` (scaffold) | Designed to ship in a client build; scoped `control-points:evaluate` + `events:write` |
+
+**The two are not interchangeable and never share a key.** A web surface takes the browser key; putting the project key (`project-api-key_…`) in a bundle hands out an unscoped credential. `runtime-proxy/AUTH.md` is the source of truth for the families.
 
 A key that is never written cannot be committed, cannot rot in a stale gitignored file, and never passes through an agent's context window.
 
@@ -466,6 +558,9 @@ A key that is never written cannot be committed, cannot rot in a stale gitignore
 ---
 
 ## Environment source (Step 3d — the project's own env signal, never a mandated `FW_ENV`)
+
+**Scaffold surfaces only.** A package surface skips this interview: the start
+profile reads `FIREWEAVE_ENV` / `APP_ENV` itself, and Step 3d asks it one question.
 
 The harness must learn the running environment NAME from **whatever this repo / its
 CI-CD platform already uses** — it must NOT force the developer to introduce a
@@ -499,7 +594,236 @@ overwrite a user-customised `readEnvSignal()` without surfacing the diff.
 
 ---
 
+## Start profile — per-language reference (package surfaces: Steps 3d, 4, 5, 6, 6b)
+
+One row per language. Step 4 writes the control-points file and the start call
+below; Step 6 places the start call FIRST; Step 6b wires the identity call; the
+read form is what `.fireweave/agent-instructions.md` teaches. The SDK floor is
+3.0.0 everywhere (staging: `3.0.0-rc.N`, Python `3.0.0rcN`), resolved by
+`rollout-server_resolve_sdk_install` with `harnessKind: 'package'` — and, for
+`dart` / `swift`, `startProfile` from `detect_surfaces` — which records
+`surfaces[].sdk = { name, version, channel }`. That channel **is** the endpoint the app
+calls (`staging` → `staging-app-server.fireweave.ai`, `stable` → `app-server.fireweave.ai`);
+say so in the install summary.
+
+| Language    | SDK + start entry                                                                                                    | Control-points file                                                     | Start call (placed FIRST)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Identity (unconditional, never behind a control point)                                                                 | Read form (default always `false`, RAMP-1)                                                                                     | Local runs                                                                                                                                                                                              |
+| ----------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts-server` | `@fireweaveai/server-sdk`, `/start`                                                                                  | `src/fireweave/control-points.ts`                                       | `src/fireweave/start.ts` calls `start({ controlPoints })`; the entrypoint's FIRST import is `import './fireweave/start';`                                                                                                                                                                                                                                                                                                                                                                                                                                       | `await fw.identify(user.id, props)` at sign-in; `fw.instanceKey()` only when the server itself is the subject          | `await fw.controlPoints.getBooleanValue('<key>', false, { targetingKey: user.id })`                                            | `NODE_ENV` (or `APP_ENV`, `FIREWEAVE_ENV`) = `development` — usually already set                                                                                                                        |
+| `web`       | `@fireweaveai/web-sdk`, `/start` + `/vite` + `/define`                                                               | `src/fireweave/control-points.ts`                                       | `src/fireweave/start.ts` exports `ready = start({ controlPoints })`; the entry module's FIRST import is `import { ready } from './fireweave/start';` and the first render waits for `ready`. SvelteKit: `src/hooks.client.ts`. Next.js: `instrumentation-client.ts` (Next ≥ 15.3) or a `'use client'` provider re-rendering through `fw.subscribe`. Angular: `start(...).then(() => bootstrapApplication(...))`. Build config: `fireweave()` (Vite, SvelteKit, React Router 7, Nuxt, Astro) or `fireweaveDefine()` (Next.js, webpack, esbuild, Rollup, Angular) | `await fw.identify(user.id, props)` at sign-in AND session restore, `await fw.reset()` at sign-out                     | `fw.controlPoints.getBooleanValue('<key>', false)` — synchronous, never a per-call `targetingKey`                              | `vite dev` and Vitest are local by default; elsewhere `FIREWEAVE_ENV=development` for that run                                                                                                          |
+| Python      | `fireweave`, `fireweave.start`                                                                                       | `fireweave_setup/control_points.py` (never a package named `fireweave`) | `start(control_points=control_points)` as the first lines of EVERY process entrypoint — `main.py`, `wsgi.py`, `asgi.py`, `create_app()`, the Celery app module, a multiprocessing initializer; a root `conftest.py` starts local for tests                                                                                                                                                                                                                                                                                                                      | `fw.identify(user_id, props)` at sign-in (async code: `asyncio.to_thread`); guard anonymous users, whose id is `None`  | `fw.control_points.get_boolean_value('<key>', False, EvaluationContext(user_id))`; async: `await asyncio.to_thread(lambda: …)` | python-dotenv / django-environ: `FIREWEAVE_ENV=development` in `.env`; pydantic-settings / decouple / dynaconf: the dev process exports it                                                              |
+| Go          | `github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3`, package `/v3/fw`                                                 | `internal/fireweave/control_points.go`                                  | `fw.Start(fw.Options{ControlPoints: appfw.ControlPoints})` (or `fw.MustStart`) in the serving path of each `main`, AFTER the app's own config loading and flag parsing; functions-framework-go: a `sync.Once` start at the top of each handler, never `init()`                                                                                                                                                                                                                                                                                                  | `go func() { _ = fw.Identify(ctx, user.ID, props) }()` at sign-in, off the request path                                | `fw.ControlPoints().GetBooleanValue("<key>", false, fw.For(user.ID))`                                                          | `FIREWEAVE_ENV=development` in the dev run config (Makefile, compose, `.envrc`)                                                                                                                         |
+| Java        | `ai.fireweave:fireweave-sdk`, `ai.fireweave.sdk.start.Fw`                                                            | `FireweaveControlPoints.java` (the app's base package)                  | `Fw.start(StartOptions.builder().controlPoints(FireweaveControlPoints.CONTROL_POINTS).build());` first in `main` after config loading; Spring Boot: before `SpringApplication.run`; servlet apps: `ServletContextListener.contextInitialized`                                                                                                                                                                                                                                                                                                                   | `Fw.identify(userId, Map.of(...))` at sign-in (it never throws)                                                        | `Fw.controlPoints().getBooleanValue("<key>", false, EvaluationContext.builder().targetingKey(userId).build())`                 | `FIREWEAVE_ENV=development` in the run configuration (Maven `exec` / Gradle `run`, IDE, compose); Spring profiles are not read                                                                          |
+| Rust        | crate `fireweave`, `fireweave::start`                                                                                | `src/fireweave_control_points.rs` (never a local `mod fireweave`)       | `fireweave::start::start(StartOptions { control_points: fireweave_control_points::control_points(), ..Default::default() })?;` first in each server binary's `main`, after config loading                                                                                                                                                                                                                                                                                                                                                                       | `let _ = fireweave::start::identify(&user.id, [...]);` at sign-in (async code: `spawn_blocking`)                       | `fireweave::start::control_points().get_boolean_value("<key>", false, Some(&ctx))` — blocking: `spawn_blocking` in async code  | `.cargo/config.toml` `[env] FIREWEAVE_ENV = "development"` at the workspace root (cargo only)                                                                                                           |
+| Dart        | `fireweave`; `package:fireweave/client.dart` (Flutter, Dart web) or `package:fireweave/server.dart` (Dart VM server) | `lib/fireweave/control_points.dart`                                     | `await Fireweave.start(controlPoints: controlPoints);` in `main` before `runApp` (Flutter), before serving (shelf), in `init()` (dart_frog); every isolate that reads must start. Never `server.dart` in a Flutter app                                                                                                                                                                                                                                                                                                                                          | client: `await fw.identify(user.id, properties: {...})` at sign-in and session restore, `await fw.reset()` at sign-out | `fw.controlPoints.getBooleanValue('<key>', false)` — synchronous, safe in `build()`                                            | client: `--dart-define=FIREWEAVE_ENV=development` in DEBUG launch configs only (`.vscode/launch.json`, Android Studio), never a release define file; server: `FIREWEAVE_ENV=development` in the dev run |
+| Swift       | product `FireweaveStart`, from the SDK's mirror repository                                                           | `FireweaveLocalControlPoints.swift`                                     | app: `startFireweave(controlPoints: appControlPoints)` in SwiftUI `App.init()` or the first line of `didFinishLaunching` (it never throws); server: `try startFireweave(FireweaveStartOptions(controlPoints: appControlPoints))` then `await fw.ready()` in `configure`                                                                                                                                                                                                                                                                                         | app: `await fw.identify(user.id, properties: [...])` at sign-in and session restore, `await fw.reset()` at sign-out    | `fw.controlPoints.getBooleanValue("<key>", default: false)` — synchronous                                                      | app: nothing — a debug build with no key and no environment name is development; server: `FIREWEAVE_ENV=development` in the scheme or run environment                                                   |
+
+**Files Step 4 writes** (the comments are part of the file; uncomment nothing — the
+user seeds control points as features arrive):
+
+```ts
+// src/fireweave/control-points.ts — every control point this app reads, with its LOCAL value.
+// Production values come from FireWeave rollouts, never from this file.
+import { defineControlPoints } from '@fireweaveai/server-sdk/start'; // web: '@fireweaveai/web-sdk/start'
+
+export const controlPoints = defineControlPoints({
+  // 'new-checkout': { local: true },
+});
+```
+
+```ts
+// src/fireweave/start.ts — the app's only FireWeave setup. Imported FIRST by the entrypoint.
+import { start } from '@fireweaveai/server-sdk/start';
+import { controlPoints } from './control-points';
+
+start({ controlPoints });
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides".
+//   mode: 'local' | 'remote'          force a mode
+//   environment: process.env.STAGE    your own environment variable for mode inference
+//   url: 'https://flags.example.com'  self-hosted fw-server
+//   key: secrets.fireweaveKey         key from your own secret store
+```
+
+```ts
+// src/fireweave/start.ts (web) — the app's only FireWeave setup. Imported FIRST by the entry module.
+import { start } from '@fireweaveai/web-sdk/start';
+import { controlPoints } from './control-points';
+
+export const ready = start({ controlPoints });
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (web)".
+//   mode: 'local' | 'remote'          force a mode
+//   environment: 'staging'            environment name for mode inference
+//   url: '/fw'                        a same-origin proxy, or a self-hosted fw-server URL
+//   persistence: 'memory'             store nothing until consent (then fw.setPersistence('localStorage'))
+//   deviceId: analytics.anonymousId() reuse your analytics id as the anonymous key
+```
+
+```ts
+// vite.config.ts (Nuxt / Astro: the same call under `vite: { plugins: [...] }`)
+import { fireweave } from '@fireweaveai/web-sdk/vite';
+export default defineConfig({
+  plugins: [, /* framework plugin */ fireweave()],
+});
+
+// next.config.mjs (and other non-Vite bundlers: the same object through their define plugin)
+import { fireweaveDefine } from '@fireweaveai/web-sdk/define';
+const fireweave = fireweaveDefine();
+export default {
+  webpack(config, { webpack }) {
+    config.plugins.push(new webpack.DefinePlugin(fireweave));
+    return config;
+  },
+};
+```
+
+```python
+# fireweave_setup/control_points.py — every control point this app reads, with its LOCAL value.
+# Production values come from FireWeave rollouts, never from this file.
+from fireweave.start import define_control_points
+
+control_points = define_control_points({
+    # "new-checkout": {"local": True},
+})
+
+# the entrypoint, FIRST lines (main.py / wsgi.py / asgi.py / create_app() / the Celery app module)
+from fireweave.start import start
+from fireweave_setup.control_points import control_points
+
+start(control_points=control_points)
+# Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (Python)".
+#   mode="local" | "remote"           force a mode
+#   environment=settings.DEPLOY_STAGE your own environment name for mode inference
+#   url="https://flags.example.com"   self-hosted fw-server
+#   key=secrets["fireweave"]          key from your own secret store
+```
+
+```go
+// internal/fireweave/control_points.go — every control point this app reads, with its LOCAL value.
+// Production values come from FireWeave rollouts, never from this file.
+package fireweave
+
+import "github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3/fw"
+
+var ControlPoints = fw.DefineControlPoints(fw.LocalControlPoints{
+	// "new-checkout": {Local: true},
+})
+
+// main.go, in the serving path after the app's own config loading
+if err := fw.Start(fw.Options{ControlPoints: appfw.ControlPoints}); err != nil {
+	log.Fatal(err)
+}
+defer fw.Shutdown(context.Background())
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (Go)".
+//   Mode: fw.ModeLocal | fw.ModeRemote   force a mode
+//   Environment: cfg.Stage               your own environment name for mode inference
+//   URL: "https://flags.example.com"     self-hosted fw-server
+//   Key: secrets.FireweaveKey            key from your own secret store
+```
+
+```java
+// FireweaveControlPoints.java — every control point this app reads, with its LOCAL value.
+// Production values come from FireWeave rollouts, never from this file.
+public final class FireweaveControlPoints {
+    public static final LocalControlPoints CONTROL_POINTS = Fw.defineControlPoints(Map.of(
+            // "new-checkout", LocalControlPoint.local(true)
+    ));
+    private FireweaveControlPoints() {}
+}
+
+// main(), first thing after the app's own config loading
+Fw.start(StartOptions.builder().controlPoints(FireweaveControlPoints.CONTROL_POINTS).build());
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (Java)".
+//   .mode(Mode.LOCAL | Mode.REMOTE)        force a mode
+//   .environment(config.deployStage())      your own environment name for mode inference
+//   .url("https://flags.example.com")       self-hosted fw-server
+//   .key(secrets.fireweaveKey())            key from your own secret store
+```
+
+```rust
+// src/fireweave_control_points.rs — every control point this app reads, with its LOCAL value.
+// Production values come from FireWeave rollouts, never from this file.
+use fireweave::start::{define_control_points, LocalControlPoint, LocalControlPoints};
+
+pub fn control_points() -> LocalControlPoints {
+    define_control_points([
+        // ("new-checkout", LocalControlPoint::local(true)),
+    ])
+}
+
+// src/main.rs, first thing in main after the app's own config loading
+fireweave::start::start(StartOptions { control_points: fireweave_control_points::control_points(), ..Default::default() })?;
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (Rust)".
+//   mode: Some(Mode::Local | Mode::Remote)     force a mode
+//   environment: Some(cfg.stage.clone())       your own environment name for mode inference
+//   url: Some("https://flags.example.com".into())  self-hosted fw-server
+//   key: Some(secrets.fireweave_key.clone())   key from your own secret store
+```
+
+```dart
+// lib/fireweave/control_points.dart — every control point this app reads, with its LOCAL value.
+import 'package:fireweave/client.dart'; // server.dart on a Dart server
+
+final controlPoints = defineControlPoints({
+  // 'new-checkout': LocalControlPoint.local(true),
+});
+
+// lib/main.dart
+Future<void> main() async {
+  await Fireweave.start(controlPoints: controlPoints); // never throws on the client
+  runApp(const App());
+}
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (Dart)".
+//   mode: Mode.local | Mode.remote   force a mode
+//   environment: 'staging'           environment name for mode inference
+//   url: 'https://flags.example.com' self-hosted fw-server
+//   deviceId: analyticsId            reuse your analytics anonymous id (client)
+```
+
+```swift
+// FireweaveLocalControlPoints.swift — every control point this app reads, with its LOCAL value.
+import FireweaveStart
+
+let appControlPoints = defineControlPoints([
+  // "new-checkout": .local(true),
+])
+
+// App.init() / didFinishLaunching (app) — server: `try startFireweave(FireweaveStartOptions(controlPoints: appControlPoints))` in configure
+startFireweave(controlPoints: appControlPoints)
+// Overrides (all optional). See .fireweave/agent-instructions.md, "FireWeave SDK: configuration and overrides (Swift)".
+//   mode: .local | .remote               force a mode
+//   environment: "staging"               environment name for mode inference
+//   url: "https://flags.example.com"     self-hosted fw-server
+//   persistence: .memory                 store nothing until consent (app)
+```
+
+When Step 3d found a project-specific environment variable, the `environment`
+override is written uncommented, read from the app's own config. A URL is never
+written into code: `FIREWEAVE_URL` sits beside the key (Step 3c) when `server.kind
+=== 'custom'`.
+
+**Client profiles, three more things.** _Consent:_ if the app has a consent
+manager, start with `persistence: 'memory'` (web) / `persistence: .memory` (Swift app)
+and wire the stored setting to consent given (`fw.setPersistence('localStorage')` /
+`.userDefaults`) and `fw.forget()` to withdrawal; Dart: a `DeviceIdStore` only after
+consent, `fw.reset(rotateDeviceId: true)` on withdrawal. Otherwise leave the default.
+_Re-render:_ components drawn before the first decisions arrive re-render through
+`fw.subscribe(...)` (web), `fw.changes.listen(...)` (Dart) or `fw.updates` /
+`await fw.ready()` (Swift). _CSP (web):_ in remote mode the page's `connect-src` must
+allow the fw-server origin — add it where initialise can edit the policy
+(`index.html` meta, `helmet`, `next.config` headers, SvelteKit `kit.csp`), else name
+it to the user; `verify_prod_path` only warns (`csp-connect-src`), since a header set
+by a CDN is invisible to it.
+
+**Distributed binaries and client-shipped code never get a server key.**
+`detect_surfaces` marks them `clientShipped: true` (Tauri, Leptos `hydrate`,
+goreleaser / wails / fyne / gomobile binaries, Flutter apps, Xcode apps): wire them as
+a client profile with a browser key, or not at all.
+
+---
+
 ## Harness templates — where they live (Step 4)
+
+**Scaffold surfaces only — a package surface uses none of these templates** (its
+files are the per-language reference's).
 
 **The harness is generated FROM FILES THAT SHIP WITH THIS SKILL. Read them; do
 not write a harness from this prose.** The prose below tells you what to
@@ -528,15 +852,15 @@ on Cursor, `fw_initialise` on Codex. Use the directory you were loaded from;
 where this document writes `initialise/` for readability, read it as "this
 skill's own directory, whatever this host calls it".
 
-| Surface     | Template dir         | Read → write (into the repo's `fireweave/` dir)                                                                                                                   |
-| ----------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ts-server` | `harness/ts-server/` | `fw-harness.ts.tpl` → `fireweave/fw-harness.ts`; `fw-providers.ts.tpl` → `fireweave/fw-providers.ts`; `fw-tracker.ts.tpl` → `fireweave/fw-tracker.ts`             |
-| `web`       | `harness/web/`       | `fw-harness.ts.tpl` → `fireweave/fw-harness.ts`; `fw-providers.ts.tpl` → `fireweave/fw-providers.ts`; `fw-tracker.ts.tpl` → `fireweave/fw-tracker.ts`             |
-| `python`    | `harness/python/`    | `fw_harness.py.tpl` → `fireweave/fw_harness.py`; `fw_providers.py.tpl` → `fireweave/fw_providers.py`; `fw_tracker.py.tpl` → `fireweave/fw_tracker.py`             |
-| `java`      | `harness/java/`      | `FwHarness.java.tpl` → `fireweave/FwHarness.java`; `FwProviders.java.tpl` → `fireweave/FwProviders.java`; `FwTracker.java.tpl` → `fireweave/FwTracker.java`       |
-| `swift`     | `harness/swift/`     | `FwHarness.swift.tpl` → `fireweave/FwHarness.swift`; `FwProviders.swift.tpl` → `fireweave/FwProviders.swift`; `FwTracker.swift.tpl` → `fireweave/FwTracker.swift` |
-| `go`        | `harness/go/`        | `fw_harness.go.tpl` → `fireweave/fw_harness.go`; `fw_providers.go.tpl` → `fireweave/fw_providers.go`; `fw_tracker.go.tpl` → `fireweave/fw_tracker.go`             |
-| `rust`      | `harness/rust/`      | `fw_harness.rs.tpl` → `fireweave/fw_harness.rs`; `fw_providers.rs.tpl` → `fireweave/fw_providers.rs`; `fw_tracker.rs.tpl` → `fireweave/fw_tracker.rs`             |
+| Surface     | Template dir         | Read → write (into the repo's `fireweave/` dir; `fireweave_harness/` for Python)                                                                                              |
+| ----------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts-server` | `harness/ts-server/` | `fw-harness.ts.tpl` → `fireweave/fw-harness.ts`; `fw-providers.ts.tpl` → `fireweave/fw-providers.ts`; `fw-tracker.ts.tpl` → `fireweave/fw-tracker.ts`                         |
+| `web`       | `harness/web/`       | `fw-harness.ts.tpl` → `fireweave/fw-harness.ts`; `fw-providers.ts.tpl` → `fireweave/fw-providers.ts`; `fw-tracker.ts.tpl` → `fireweave/fw-tracker.ts`                         |
+| `python`    | `harness/python/`    | `fw_harness.py.tpl` → `fireweave_harness/fw_harness.py`; `fw_providers.py.tpl` → `fireweave_harness/fw_providers.py`; `fw_tracker.py.tpl` → `fireweave_harness/fw_tracker.py` |
+| `java`      | `harness/java/`      | `FwHarness.java.tpl` → `fireweave/FwHarness.java`; `FwProviders.java.tpl` → `fireweave/FwProviders.java`; `FwTracker.java.tpl` → `fireweave/FwTracker.java`                   |
+| `swift`     | `harness/swift/`     | `FwHarness.swift.tpl` → `fireweave/FwHarness.swift`; `FwProviders.swift.tpl` → `fireweave/FwProviders.swift`; `FwTracker.swift.tpl` → `fireweave/FwTracker.swift`             |
+| `go`        | `harness/go/`        | `fw_harness.go.tpl` → `fireweave/fw_harness.go`; `fw_providers.go.tpl` → `fireweave/fw_providers.go`; `fw_tracker.go.tpl` → `fireweave/fw_tracker.go`                         |
+| `rust`      | `harness/rust/`      | `fw_harness.rs.tpl` → `fireweave/fw_harness.rs`; `fw_providers.rs.tpl` → `fireweave/fw_providers.rs`; `fw_tracker.rs.tpl` → `fireweave/fw_tracker.rs`                         |
 
 `.tpl` is stripped on write; the basename is otherwise preserved (Python's
 snake_case and Java's PascalCase names are already correct in the template
@@ -544,7 +868,7 @@ filenames — see the **Python surface** / **Java surface** sections below; for
 Java, `fireweave/` is the `<base package>.fireweave` package directory and the
 templates' `package fireweave;` line is rewritten to match). Two files have
 **no** template and are authored by their own
-step: `fireweave/__init__.py` for Python, and the `fw-tracker` const tree for
+step: `fireweave_harness/__init__.py` for Python, and the `fw-tracker` const tree for
 `ts-server` / `web` (Step 5 — an empty tree, not a copy of the Python tracker).
 
 **HARD — the split is two files per TS surface, not one.** `fw-harness.ts`
@@ -569,7 +893,7 @@ expected outcome for those files, not a sign you are reading the wrong one:
   - `FW_ENV_ALIASES` from the Step 3d answer.
 - Java only: the `package fireweave;` line — rewrite to the app's
   `<base package>.fireweave` and place the files in the matching directory.
-- the prod branch, per Step 3b: the connected vendor's flag provider. **This one
+- the prod branch, per Step 3b: the connected vendor's control-point provider. **This one
   has no placeholder token** — it lives inside `makeConnectedVendorProvider()` in
   the providers template, so there is nothing to grep for.
   **Telemetry is NOT part of this substitution.** FireWeave does not wire an
@@ -592,28 +916,33 @@ the installed plugin bundle) and re-run.
 
 ---
 
-## Python surface (Step 2 / 4 / 6 — flags prod-capable)
+## Python surface (Step 2 / 4 / 6 — control points prod-capable)
 
 **Detect (Step 2).** A Python surface is present when the repo has `pyproject.toml`,
 `setup.py`/`setup.cfg`, `requirements*.txt`, or a package of `*.py` under the source
-root. Classify it as surface `python` — **prod-capable for flags** (`SURFACE_REGISTRY`
+root. Classify it as surface `python` — **prod-capable for control points** (`SURFACE_REGISTRY`
 lists it with the `fireweave` vendor).
 
-**Scaffold (Step 4).** Generate from `harness/python/` (all three `.tpl` files;
-path resolved as in **Harness templates — where they live**) into a `fireweave/` package at
-the idiomatic source root, using **snake_case module names** (Python cannot import
-hyphenated modules): `fireweave/fw_harness.py`, `fireweave/fw_providers.py`,
-`fireweave/fw_tracker.py`, plus `fireweave/__init__.py`. Regenerate `FW_ENV_PROFILES`
+**Scaffold surfaces only** — a new Python surface is a package surface (`fireweave.start`;
+see **Start profile — per-language reference**).
 
-- `FW_DEFAULT_ENV` from Step 3a and the `# fw:env-source` block from Step 3d (Python
-  reads `os.environ`; default `_read_env_signal` prefers `APP_ENV`/`ENVIRONMENT`/`ENV`,
-  FW_ENV last). **Both branches are real and both come from the `fireweave` PyPI
-  SDK:** dev binds `make_fireweave_local_provider(echo=True)`, prod binds
-  `FireweaveProvider(FireweaveRuntime(FireweaveRemoteAdapter()))`. The adapter reads
-  `FW_API_URL` + `FW_PROJECT_API_KEY` from `os.environ` itself, so there is nothing to
-  plumb. Telemetry stays **console** on both tiers unless the operator wires a real
-  OTLP exporter — a half-wired exporter looks configured and silently drops every
-  span, which is worse than console.
+**Scaffold (Step 4).** Generate from `harness/python/` (all three `.tpl` files;
+path resolved as in **Harness templates — where they live**) into a `fireweave_harness/`
+package at the idiomatic source root — **never `fireweave/`, which shadows the
+`fireweave` PyPI SDK in a flat layout** (`from fireweave import init_fireweave` would
+import the harness package and fail at boot) — using **snake_case module names**
+(Python cannot import hyphenated modules): `fireweave_harness/fw_harness.py`,
+`fireweave_harness/fw_providers.py`, `fireweave_harness/fw_tracker.py`, plus
+`fireweave_harness/__init__.py`. Regenerate `FW_ENV_PROFILES` + `FW_DEFAULT_ENV` from
+Step 3a and the `# fw:env-source` block from Step 3d (Python reads `os.environ`;
+default `_read_env_signal` prefers `APP_ENV`/`ENVIRONMENT`/`ENV`, FW_ENV last).
+**Both branches are real and go through ONE entry point of the `fireweave` PyPI
+SDK:** `init_fireweave(mode="local", …)` for dev and `init_fireweave(mode="remote",
+…)` for prod. The SDK reads no environment, so `fw_providers.py` resolves `FW_API_URL`
+
+- `FW_PROJECT_API_KEY` from `os.environ` and passes them as explicit `api_url` /
+  `api_key` options, refusing loudly when either is missing. The harness wires no
+  telemetry on either tier.
 
 **Wire the entrypoint (Step 6).** Inject `init_fw_harness()` as the FIRST statement
 of the app's entrypoint — top of `if __name__ == "__main__":` for a script, or the
@@ -624,7 +953,7 @@ location in `project.json` `rolloutReady` (see harnesses[] below).
 **Record (Step 9) — write the `harnesses[]` shape.** Persist this surface into
 `project.json` `rolloutReady.harnesses[]` (the surface-keyed list read by the
 `normalizeHarnesses` shim), e.g. `{ "surface": "python", "path":
-"fireweave/fw_harness.py", "entrypoint": "<detected entrypoint>" }`. Keep writing the
+"fireweave_harness/fw_harness.py", "entrypoint": "<detected entrypoint>" }`. Keep writing the
 legacy singular `harnessEntrypoint`/`webHarnessEntrypoint` fields for a ts-server/web
 surface too until the contract phase; on `--reinit`, lazily upgrade an existing legacy
 `project.json` to include `harnesses[]` (never drop the legacy fields — the shim and
@@ -632,14 +961,17 @@ the golden backward-compat test depend on them).
 
 ---
 
-## Java surface (Step 2 / 4 / 6 — flags prod-capable)
+## Java surface (Step 2 / 4 / 6 — control points prod-capable)
 
 **Detect (Step 2).** A Java surface is present when the repo has `pom.xml`,
 `build.gradle`/`build.gradle.kts`/`settings.gradle*`, or `*.java` sources under
-`src/main/java/`. Classify it as surface `java` — **prod-capable for flags**
+`src/main/java/`. Classify it as surface `java` — **prod-capable for control points**
 (`SURFACE_REGISTRY` lists it with the `fireweave` vendor, on the `ai.fireweave`
 Maven SDK). Kotlin (`.kt`/`.kts`) is NOT this surface — it stays an ungoverned
 scan extension pending its own surface decision.
+
+**Scaffold surfaces only** — a new Java surface is a package surface
+(`ai.fireweave.sdk.start.Fw`; see **Start profile — per-language reference**).
 
 **Scaffold (Step 4).** Generate from `harness/java/` (all three `.tpl` files;
 path resolved as in **Harness templates — where they live**) into the app's
@@ -668,8 +1000,8 @@ compiles against the retired surface.
 **Wire the entrypoint (Step 6).** Call `FwHarness.initFwHarness()` as the FIRST
 statement of `main(String[] args)` — or, for Spring Boot, before
 `SpringApplication.run(...)` in the bootstrap class — so the provider is bound
-before any flag read. It is synchronous (no `await`; `verify_prod_path`'s java
-token row greps for the bare call). Anchor flag call sites with
+before any control-point read. It is synchronous (no `await`; `verify_prod_path`'s java
+token row greps for the bare call). Anchor control-point call sites with
 `// @fireweave-controlpoint <key>`.
 
 **Record (Step 9) — write the `harnesses[]` shape.** Persist this surface into
@@ -686,11 +1018,11 @@ class path>" }`. Java has NO legacy singular fallback in `harnessEntrypointFor`
 `Package.swift`, an `*.xcodeproj`/`*.xcworkspace`, or `*.swift` sources.
 Classify it as surface `swift`.
 
-**Prod-capable** on the Swift SDK's remote adapter → fw-server
-`/v1/flags/evaluate`. SwiftPM resolves a git URL + tag directly, so
-`swift/v*` on the SDK repo IS the installable release — no package-index entry
-is required. Pin it with `.package(url:, from:)` in `Package.swift`, or the
-equivalent Xcode package dependency.
+**Scaffold surfaces only** — a new Swift surface is a package surface (the
+`FireweaveStart` product, resolved from the SDK's mirror repository; see **Start
+profile — per-language reference**). An existing Swift scaffold is **prod-capable**
+on the Swift SDK's remote adapter → fw-server `/v1/control-points/evaluate`, through
+the `Fireweave` product it already depends on.
 
 **Credentials are BUILD-BAKED, not environment-read.** This is the one thing to
 get right on iOS and the reason the surface is not simply "server with different
@@ -707,7 +1039,7 @@ dev/simulator override:
 | Info.plist key    | Meaning                                   |
 | ----------------- | ----------------------------------------- |
 | `FWEnvironment`   | environment NAME (keys `FW_ENV_PROFILES`) |
-| `FWProjectApiKey` | project ingest key                        |
+| `FWProjectApiKey` | project key (`project-api-key_…`)         |
 | `FWApiUrl`        | fw-server base URL                        |
 
 Populate them from your build configuration (`$(FW_ENVIRONMENT)` etc. in an
@@ -721,12 +1053,15 @@ in your bootstrap before the first read.
 
 ### Go surface
 
-**Prod-capable** on the Go SDK's remote adapter → fw-server
-`/v1/flags/evaluate`. Go modules resolve from VCS tags rather than a registry,
-so `sdks/go/v*` on the SDK repo IS the installable release — `go get
-github.com/FireWeave-HQ/fireweave-sdk/sdks/go@<tag>` resolves through
-proxy.golang.org. Only prerelease tags exist today; pin the exact one and let
-the sdk-channel record it as a prerelease rather than rounding it to `stable`.
+**Scaffold surfaces only** — a new Go surface is a package surface (`.../sdks/go/v3/fw`;
+see **Start profile — per-language reference**). An existing Go scaffold is
+**prod-capable** on the Go SDK's remote adapter → fw-server
+`/v1/control-points/evaluate`. Go modules resolve from VCS tags rather than a registry:
+`go get github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3@latest` (the newest v3
+release, ≥ `v3.0.0`; staging: the highest `v3.0.0-rc.N`). `go.mod` records the exact version `go get`
+resolved, by design (limit 1 of **SDK installs never pin an exact version**). The
+scaffold always uses the **`/v3`** module path — `/v2` is the retired pre-control-points module, and the unsuffixed `.../sdks/go` module is a different, stale module whose newest tag is
+`v0.0.1-staging.2`.
 
 **Scaffold (Step 4).** Generate from `harness/go/` (all three `.tpl` files) into the
 repo's `fireweave/` package directory. Go exports are initial-capital, so the
@@ -734,21 +1069,23 @@ harness spells the tier decision `IsProd()` / `MakeConnectedVendorProvider()` �
 `verify_prod_path` greps those capitalised tokens, not the TS ones. Reads:
 
 ```go
+// fwsdk = "github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3/fireweave"
+ec := fwsdk.NewEvaluationContext(userID, nil)
 // @fireweave-controlpoint <feature-slug>
-if GetFwClient().ControlPoints().GetBooleanValue(
-    "<feature-slug>", false, fireweave.NewEvaluationContext(userID, nil)) {
+if fireweave.GetFwClient().ControlPoints().GetBooleanValue("<feature-slug>", false, &ec) {
 }
 ```
+
+The context is passed by pointer: `GetBooleanValue` takes `*EvaluationContext`.
 
 `InitFwHarness()` is synchronous — call it first in `main()` and fail the
 process on a non-nil error.
 
 ### Rust surface
 
-**Prod-capable** on the `fireweave` crate's remote adapter. **Release gate: the
-crate is not on crates.io yet.** The surface may be scaffolded and verified now,
-and MUST NOT ship to a customer until the crate is genuinely installable —
-treat it exactly like the fw-plugins bundle gate.
+**Scaffold surfaces only** — a new Rust surface is a package surface (`fireweave::start`
+from the `fireweave` crate at ≥ 3.0.0; see **Start profile — per-language reference**).
+An existing Rust scaffold is **prod-capable** on the crate's remote adapter.
 
 **Scaffold (Step 4).** Generate from `harness/rust/` (all three `.tpl` files) into the
 crate's `fireweave/` module. Rust is snake_case like python: `is_prod()`,
@@ -765,17 +1102,13 @@ call it first in `main()` and propagate the error.
 
 **Scaffold (Step 4).** Generate from `harness/swift/` (all three `.tpl` files)
 into the app's `fireweave/` directory: `FwHarness.swift`, `FwProviders.swift`,
-`FwTracker.swift`. Add the SDK as a SwiftPM dependency on the `Fireweave`
-product from the SDK repository, pinned to a **revision** — there is no released
-version to pin, which is the same fact that makes this surface dev-only.
-Regenerate `FW_ENV_PROFILES` + `FW_DEFAULT_ENV` from Step 3a and the
-`// fw:env-source` block from Step 3d. **Only the dev branch is wired:**
-`makeDevProvider()` brings the SDK up in local mode through `initFireweave`, and
-`makeConnectedVendorProvider()` **throws**. Leave the throw exactly as
-scaffolded — a stub that returned a local client instead would false-green any
-prod check that reached it, which is strictly worse than a loud refusal. When a
-real tagged release lands, flip `SURFACE_REGISTRY.swift.prodProviderVendors` to
-`FIREWEAVE_ONLY` and replace that body in the same change.
+`FwTracker.swift`, against the `Fireweave` product. Regenerate `FW_ENV_PROFILES` +
+`FW_DEFAULT_ENV` from Step 3a and the `// fw:env-source` block from Step 3d. **Both
+branches are wired through `initFireweave`:** `makeDevProvider()` brings the SDK up in
+local mode, and `makeConnectedVendorProvider()` in remote mode from the Info.plist
+credentials above — it **throws** when either is missing, so a prod-tier build fails
+loudly instead of degrading to local evaluation. Leave that throw exactly as
+scaffolded.
 
 **Wire the entrypoint (Step 6).** `await FwHarness.initFwHarness()` first in the
 app's bootstrap, before the first read — from a `Task { }` where the bootstrap is
@@ -791,15 +1124,17 @@ e.g. `{ "surface": "swift", "path": "Sources/<Target>/fireweave/FwHarness.swift"
 
 ## Credential env canon (Step 3 + Step 9)
 
-Fireweave remote flag-eval credential env names differ by harness surface (apps call fw-server `/v1/flags/evaluate`, never PostHog directly). Initialise must keep **`.env.example`**, **`project.json`**, and **each manifest's `harness.rolloutCredentialEnv`** aligned. Seal still provisions flags on FireWeave-managed PostHog server-side — keep `flagTelemetryProvider: "connected:posthog"` for control-plane wiring.
+FireWeave remote control-point evaluation credential env names differ by harness surface (apps call fw-server `/v1/control-points/evaluate`, never PostHog directly). Initialise must keep **`.env.example`**, **`project.json`**, and **each manifest's `harness.rolloutCredentialEnv`** aligned. Seal still provisions flags on FireWeave-managed PostHog server-side — keep `controlPointTelemetryProvider: "connected:posthog"` for control-plane wiring.
 
-| Surface     | `harness.rolloutCredentialEnv` | Host env                                              | `project.json` field                   |
-| ----------- | ------------------------------ | ----------------------------------------------------- | -------------------------------------- |
-| `ts-server` | `FW_PROJECT_API_KEY`           | `FW_API_URL` (fallback `FW_ATTEST_URL`)               | `rolloutReady.rolloutCredentialEnv`    |
-| `web`       | `PUBLIC_FW_PROJECT_API_KEY`    | `PUBLIC_FW_API_URL` (fallback `PUBLIC_FW_ATTEST_URL`) | `rolloutReady.webRolloutCredentialEnv` |
-| `python`    | `FW_PROJECT_API_KEY`           | `FW_API_URL`                                          | per-surface entry in `harnesses[]`     |
-| `java`      | `FW_PROJECT_API_KEY`           | `FW_API_URL`                                          | per-surface entry in `harnesses[]`     |
-| `swift`     | `FW_PROJECT_API_KEY`           | `FW_API_URL`                                          | per-surface entry in `harnesses[]`     |
+| Surface                                 | `harness.rolloutCredentialEnv`                 | Host env                                                                                     | `project.json` field                   |
+| --------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `ts-server`                             | `FW_PROJECT_API_KEY`                           | `FW_API_URL` (fallback `FW_ATTEST_URL`)                                                      | `rolloutReady.rolloutCredentialEnv`    |
+| `web`                                   | `PUBLIC_FW_PROJECT_API_KEY`                    | `PUBLIC_FW_API_URL` (fallback `PUBLIC_FW_ATTEST_URL`)                                        | `rolloutReady.webRolloutCredentialEnv` |
+| `python`                                | `FW_PROJECT_API_KEY`                           | `FW_API_URL`                                                                                 | per-surface entry in `harnesses[]`     |
+| `java`                                  | `FW_PROJECT_API_KEY`                           | `FW_API_URL`                                                                                 | per-surface entry in `harnesses[]`     |
+| `swift`                                 | `FW_PROJECT_API_KEY`                           | `FW_API_URL`                                                                                 | per-surface entry in `harnesses[]`     |
+| any **package** surface, server profile | `FIREWEAVE_KEY`                                | none — the SDK channel is the endpoint; `FIREWEAVE_URL` only when `server.kind === 'custom'` | `surfaces[].rolloutCredentialEnv`      |
+| any **package** surface, client profile | `FIREWEAVE_BROWSER_KEY` (a **build** variable) | none — as above                                                                              | `surfaces[].rolloutCredentialEnv`      |
 
 The `FW_ATTEST_URL` fallbacks are **legacy names, read but never written.**
 Nothing emits them any more; harnesses read `FW_API_URL` first and fall back
@@ -825,14 +1160,14 @@ Record the patched `package.json` path in `installedInto[]` when changed.
 
 ---
 
-## Cohort identity wiring (Step 6b) — always-on, never flag-gated
+## Cohort identity wiring (Step 6b) — always-on, never control-point-gated
 
 Manifests declare `context.targetingKey: "userId"` and upstream `%` ramps hash that
 subject id. The code that supplies it — `identify` on auth, `reset` on sign-out, the
 `targetingKey` carried in the evaluation context, and the cache re-prefetch that
-follows each — is the **precondition** for flag evaluation, not a feature of it.
+follows each — is the **precondition** for control-point evaluation, not a feature of it.
 
-**Never place it behind a FireWeave flag (INIT-S8).** It deadlocks: the flag evaluates
+**Never place it behind a FireWeave control point (INIT-S8).** It deadlocks: the control point evaluates
 with no targeting key, RAMP-1 makes the safe default `false`, the bind never runs, and
 the key never arrives. The ramp then shows 0% adoption, so it reads as a product
 failure instead of a wiring bug.
@@ -850,23 +1185,23 @@ At init:
    reporting "no seam found", which is a different claim. Candidates are a SHORT LIST to
    ask about, never an answer — still ask with `the `question` tool`; do not guess.
 2. **Assert it is unconditional.** The bind must not sit inside an `if` / `while` / `switch`
-   on a flag, a ternary or `&&` on a flag, a `if (!flag) return` guard clause above it, a
-   same-file helper whose _call_ is flag-gated, or under a `// @fireweave-controlpoint` anchor.
+   on a control point, a ternary or `&&` on a control point, a `if (!flag) return` guard clause above it, a
+   same-file helper whose _call_ is control-point-gated, or under a `// @fireweave-controlpoint` anchor.
    `rollout-server_assert_dev_checklist` blocks these shapes on every feature — fix
    at init rather than leaving it for the first ship. **Known limits (still escapes):**
    cross-file / imported helpers, multi-hop wrappers (`wrap → doIdentify → identify`),
    dynamic/computed callees (`fns[name]()`), object-literal helpers (`const helpers = {
 doBind: () => identify() }` — same-file function/arrow/method/class-property helpers
-   and one-hop flag helpers _are_ covered), and full Svelte template AST (only `<script>`
+   and one-hop control-point helpers _are_ covered), and full Svelte template AST (only `<script>`
    bodies are AST-scanned; `{#if}` / `on:click` handlers get a soft warn when the
-   condition looks flag-bound — not a hard block). Non-TS/JS surfaces (Go/Python/Java/
+   condition looks control-point-bound — not a hard block). Non-TS/JS surfaces (Go/Python/Java/
    Dart/Vue/Astro/…) are skipped with an info finding, not silently. Keep identity
    binds direct and same-module.
 3. **Never scaffold the anti-pattern.** Any identity code initialise writes is emitted
-   unconditionally. Harness templates deliberately contain no flag-gated identity call;
+   unconditionally. Harness templates deliberately contain no control-point-gated identity call;
    keep it that way on `--reinit`.
-4. **Gate the consumer, not the bind.** A new _identity strategy_ still ships flag-free;
-   if you must compare two strategies, flag the feature that reads the identity and keep
+4. **Gate the consumer, not the bind.** A new _identity strategy_ still ships ungated;
+   if you must compare two strategies, gate the feature that reads the identity and keep
    both binds always-on.
 
 Record the identity module in `installedInto[]` when initialise writes or edits it, and
@@ -883,14 +1218,39 @@ bundle (dogfood sync on the PR is not a substitute for publish).
 
 Write `.fireweave/agent-instructions.md` using repo-specific paths from Step 4–6. It MUST include these sections:
 
+**`ts-server` and `web` package surfaces: render it, do not write it.** Call
+`rollout-server_apply_setup_artifacts` with those surfaces (paths from Steps 4–6,
+each surface's metrics findings) and `parts: ["agent-instructions"]`. It writes the
+sections below from this document's own text, with every placeholder filled, so the
+file is identical to what FireWeave's cloud setup produces. The same tool writes the
+Step 4 control-points and start files (`package-files`, never overwriting existing
+ones), the Step 5 stamps file (`stamps`) and the `.fireweave/.gitignore` lines
+(`gitignore`). Write the sections by hand only for the other surfaces.
+
 ### Rollout-ready layout
 
-Table of harness paths, `fw-tracker` (and its `FW_STAMPS` line), `PROVIDERS.md`, and a
+One row per surface, by harness kind. **Package surface:** its control-points file,
+the file carrying its start call (`src/fireweave/start.ts` and the entrypoint that
+imports it first, or the entrypoint itself), web's build config, and its stamps file
+(`.fireweave/stamps.ts` / `.stamps.py` / `.stamps.json` with the surface's
+`FW_STAMPS` entries) — and the line "no harness module: never add `fw-harness`,
+`fw-providers` or a second FireWeave setup file". **Scaffold surface:** harness
+paths, `fw-tracker` (and its `FW_STAMPS` line), `PROVIDERS.md`. Then a
 row stating that **rollout-ready manifests and change stamps are server-owned** —
 reached through `rollout-server_upsert_rollout_manifest` and the resolution
 seam, with no directory under `.fireweave/` to read or write. List the gitignored
 runtime paths (`.cache/` projection, `.queue/` unsynced author state, `.lock`) and
 state that `.queue/` must never be deleted to clear a warning.
+
+### FireWeave SDK: configuration and overrides — one section PER PACKAGE SURFACE
+
+For each package surface, write that language's section from **Agent instructions
+— SDK configuration sections** below **verbatim**, filling only its `<placeholders>`
+from Steps 4–6 (a repo with a ts-server and a web surface gets both sections). These
+sections are where a feature agent learns every start option, its environment or
+build variable, its default, the mode rule and the do-nots, so do not shorten them.
+A scaffold surface gets none. `--reinit` regenerates them; a surface added later gets
+its own.
 
 ### How to emit a metric — one section PER SURFACE
 
@@ -911,7 +1271,7 @@ behind it, and can therefore carry a threshold derived from a real baseline
 rather than a guess. A metric written fresh has none of that on its first
 rollout.
 
-This inventory has no other source. Every `observability.query.*` capability
+This inventory has no other source. Every observability query capability (`observability.metric.query`, …)
 takes a metric NAME — nothing lists what exists — so the repo is the only place
 to learn it, and the only time anyone reads the repo for this purpose is here.
 Skip it and every future change re-derives it, badly, from whichever files that
@@ -954,6 +1314,34 @@ it correctly instead of guessing at the syntax.
 
 `--reinit` regenerates these sections, and a surface added later gets its own.
 
+### Before you add a metric — check once per change whether metrics are connected
+
+Write this section whatever observability looked like at init: metrics are
+connected in FireWeave, not in the repo, and that can happen any day after this
+file is written. So the decision is made per change, from one read, never from
+what this file or `project.json` remembers.
+
+**The check — one call, once per change, before step 3 of the HARD ORDER.**
+Read the project's capabilities for a production-tier environment
+(`<prod-env>`; `.fireweave/project.json` names the project):
+
+- with the FireWeave plugin: `rollout-server_guarded_call` →
+  `get_project_capabilities` `{ projectId, environment: "<prod-env>" }`;
+- otherwise: `fw api GET /v1/projects/<projectId>/capabilities --query '{"environment":"<prod-env>"}'`.
+
+Read `bindings.observability.state` (it means **Metrics**; Logs and Traces are separate units) and act on it — nothing else:
+
+| What the read says                                          | `metricsCheck.state` | What you do                                                                                                                                                                                                 |
+| ----------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bound`                                                     | `bound`              | Metrics are connected. Resolve each control point's signals as step 3 says: reuse what the app already emits, add one with this surface's **How to emit a metric**, or park. The ramp can then run on them. |
+| `unbound`                                                   | `unbound`            | Nothing can read a metric back. Add **no** metric code and declare no metric for this change. It ramps manually; say so in the PR.                                                                          |
+| `needs-attention`                                           | `needs-attention`    | As `unbound`, and tell the user the observability connection needs fixing in FireWeave.                                                                                                                     |
+| the call failed — offline, signed out, a timeout, any error | `unknown`            | **Assume not connected**, as `unbound`. Never retry in a loop and never block the change on it.                                                                                                             |
+
+Record the result in the manifest's `metricsCheck` —
+`{ state, environment: "<prod-env>", checkedAt: <now, ISO> }` — so the
+checklist and the reviewer know why the change has no metrics.
+
 ### Does this task qualify? — classify BEFORE step 1
 
 A hook fires this reminder on a keyword match (`add|implement|feature|fix|ship|
@@ -992,17 +1380,17 @@ with an edit is a `change` from the first line of code, not from the next prompt
 
 **Backfill after coding is NOT the client path.** If you implement first and author the
 manifest later, `/fw-rollout` and clients cannot rely on promote-not-wrap. That applies to
-the manifest's IDENTITY — flags and wrap points, which you decide up front and encode as you
+the manifest's IDENTITY — control points and wrap points, which you decide up front and encode as you
 write. It does not apply to `telemetry.metrics`: those are a judgement about a branch that
 does not exist at step 1, so the set is filled in AT each control point and recorded when the
 change is done. `metrics: []` at first author is valid and is the honest state there.
 
-1. **FIRST** — author the rollout-ready manifest with `rollout-server_upsert_rollout_manifest` `{ feature, manifest, baseContentHash }` (build the manifest from the **Manifest contract** below). **FireWeave stores it — do not write a manifest file yourself.** `baseContentHash` is required and nullable: `null` asserts "no row exists yet"; otherwise pass the `contentHash` of the row you read. There is no omit-the-base path — omitting a base is last-writer-wins, and last-writer-wins silently erases a teammate's guardrail metric. On `outcome: 'conflict'`, re-apply your change on top of the returned `current` and retry with `baseContentHash = currentContentHash`. On `outcome: 'queued'`, fw-server did not answer: the edit is safe in `.fireweave/.queue/` and will replay, but **shipping is blocked until it drains** and no teammate can see it. Mint `chg_<ULID>` + `stmp_<ULID>` (the `chg_`/`stmp_` prefixes are hard-enforced by `build_register_rollout_from_manifest` at ship time; a date-slug fails registration). Apply the stamp policy: per-surface stamps by default (append each stamp ONLY to its own surface's `FW_STAMPS`); one shared stamp is allowed only when the change is single-project and every participating surface's harness is surface-aware. **`FW_STAMPS` is the one line FireWeave still writes into your repo** — the stamp record itself lives in `change_stamps` server-side.
+1. **FIRST** — author the rollout-ready manifest with `rollout-server_upsert_rollout_manifest` `{ feature, manifest, baseContentHash }` (build the manifest from the **Manifest contract** below). **FireWeave stores it — do not write a manifest file yourself.** `baseContentHash` is required and nullable: `null` asserts "no row exists yet"; otherwise pass the `contentHash` of the row you read. There is no omit-the-base path — omitting a base is last-writer-wins, and last-writer-wins silently erases a teammate's guardrail metric. On `outcome: 'conflict'`, re-apply your change on top of the returned `current` and retry with `baseContentHash = currentContentHash`. On `outcome: 'queued'`, fw-server did not answer: the edit is safe in `.fireweave/.queue/` and will replay, but **shipping is blocked until it drains** and no teammate can see it. Mint `chg_<ULID>` + `stmp_<ULID>` (the `chg_`/`stmp_` prefixes are hard-enforced by `build_register_rollout_from_manifest` at ship time; a date-slug fails registration). Apply the stamp policy: per-surface stamps by default (append each stamp ONLY to its own surface's `FW_STAMPS` — in its `fw-tracker` on a scaffold surface, in its `.fireweave/stamps.<ext>` file on a package surface); one shared stamp is allowed only when the change is single-project and every participating surface's harness is surface-aware. **`FW_STAMPS` is the one line FireWeave still writes into your repo** — the stamp record itself lives in `change_stamps` server-side.
 
    **Absence has names — only one means _author it now_.** If a read reports no manifest, the tools return an `absence`: `never-authored` (author it), `not-fetched` (run `fw sync` — this worktree has no projection, so absent is not evidence), `not-authorized` (the manifests are **withheld**, not absent — `fw login` or ask an admin), `server-unavailable` (retry), `queued` (you already authored it; drain the queue). **Never author a manifest to clear any of the last four** — you would be displacing a contract you cannot currently see.
 
-2. Gate behavior behind a control point via the harness (`fw.controlPoints.getBooleanValue(key, false, ctx)`) — not legacy direct vendor SDK calls. Add `// @fireweave-controlpoint <key>` at every evaluation site **while writing code**. Eval-site default MUST be `false` (RAMP-1). If you need the feature **on locally** for dogfood, set that key in the surface's `makeDevProvider()` `devFlags` — never `fw.controlPoints.getBooleanValue(key, true)`.
-3. **At each control point, as you write it, decide that control point's signals.** Not before — a metric chosen before the branch exists is a guess about how code you have not written will fail. Not after — a separate analysis pass is a pass that gets skipped, and it happens when the context is coldest. At the anchor the knowledge is already in front of you and the decision costs nothing extra.
+2. Gate behavior behind a control point — not legacy direct vendor SDK calls. **Package surface:** read through the SDK's `fw` in that language's form (its **FireWeave SDK: configuration and overrides** section above), and seed the key in the surface's control-points file — `'<key>': { local: true }` or the language's equivalent — never anywhere else. **Scaffold surface:** read via the harness (`fw.controlPoints.getBooleanValue(key, false, ctx)`), and seed the key in the surface's `makeDevProvider()` `devFlags`. Add `// @fireweave-controlpoint <key>` at every evaluation site **while writing code**. Eval-site default MUST be `false` (RAMP-1): to see a feature **on locally**, seed it — never `fw.controlPoints.getBooleanValue(key, true)`.
+3. **At each control point, as you write it, decide that control point's signals** — when the change's metrics check (**Before you add a metric**, done once per change) says `bound`. Otherwise add no metric code and declare none: the change ramps manually, and its `metricsCheck` says why. Not before — a metric chosen before the branch exists is a guess about how code you have not written will fail. Not after — a separate analysis pass is a pass that gets skipped, and it happens when the context is coldest. At the anchor the knowledge is already in front of you and the decision costs nothing extra.
 
    **Ask two questions of THIS branch.** _Stability:_ name the failure mode — not "it could break" but "the new cache can serve a stale price" — then name the signal that moves when it does. Prefer errors split by class (a 5xx surge and a 4xx surge mean opposite things), a latency QUANTILE (p95/p99, never a mean — a tail cannot move a mean), and a saturation/throughput signal when the change alters resource shape. _Adoption:_ only when the change is user-observable — reach, or completion of the flow it improves. For a refactor or an infra change **"none" is the right answer**, and a fabricated adoption metric is worse than an absent one because it makes the manifest look complete.
 
@@ -1011,7 +1399,7 @@ change is done. `metrics: []` at first author is valid and is the honest state t
    - **Add.** Nothing covers it. Write the emit call **in the same edit as the branch it observes**, using this surface's own client — **read this surface's section under _How to emit a metric_ FIRST**; it names the client, the exact import line, and where the instrument comes from, all read out of this repo at init. Do not reconstruct the call shape from library docs: the repo and the docs rarely agree, and a call that compiles against the wrong instrument produces a metric the ramp cannot query. Declare it `provenance: "added"`. A metric written by this change has **no baseline on its first rollout**, so leave `threshold` off and let it be observe-only until it earns one.
    - **Park.** The change can fail, no signal would show it, and none can be added because this surface initialises no telemetry. Say so and stop. Do not invent a metric to fill the field.
 
-   **Every control point owes an answer.** A flag is answered when some metric's `guards` names it, or when `flags[].noSignalNeeded = { reason }` says why none is needed. "Nothing to measure here" is legitimate for a refactor; not having looked is not, and an empty metric list cannot tell them apart.
+   **Every control point owes an answer.** A control point is answered when some metric's `guards` names it, or when `controlPoints[].noSignalNeeded = { reason }` says why none is needed. "Nothing to measure here" is legitimate for a refactor; not having looked is not, and an empty metric list cannot tell them apart.
 
 4. **Amend the manifest with what you decided** — the same `upsert_rollout_manifest`, `baseContentHash` set to the `contentHash` of the row you authored in step 1. A record of decisions already made, not a fresh investigation.
 5. **BEFORE calling the task done** — run `rollout-server_assert_dev_checklist` with `{ feature }`. **PARK on any block.** The checklist hard-fails a declared metric nothing emits: for `provenance: "added"` the name must appear in a wrap-point file; for `"existing"` it must be emitted somewhere under `sourceRoots`. Also run `detect_rollout_ready` + `reconcile` phase `build`.
@@ -1024,20 +1412,23 @@ change is done. `metrics: []` at first author is valid and is the honest state t
 - Delete `fw-tracker` stamps without `/fw-cleanup`.
 - Write repo-local `mcp/rollout-server/` when using the Cursor FireWeave plugin.
 - Finish feature code without a matching rollout-ready package (no backfill).
-- Use `fw.controlPoints.getBooleanValue(key, true)` / `default: true` to make a feature work on your laptop — that same `true` is what prod serves when the provider flag is missing. Local ON → `devFlags` only.
-- Gate identity wiring behind a feature flag — `identify` / `reset` / the targeting-key bind are the precondition for flag evaluation, never a feature of it (INIT-S8; `assert_dev_checklist` blocks it).
+- Use `fw.controlPoints.getBooleanValue(key, true)` / `default: true` to make a feature work on your laptop — that same `true` is what prod serves when the control point is missing at the provider. Local ON → the control-points file (package surface) or `devFlags` (scaffold) only.
+- Add a second FireWeave setup on a package surface: no `initFireweave`, no second start call, no `fw-harness` / `fw-providers` beside the start profile.
+- Gate identity wiring behind a control point — `identify` / `reset` / the targeting-key bind are the precondition for control-point evaluation, never a feature of it (INIT-S8; `assert_dev_checklist` blocks it).
 - Rely on INIT-S8 for full Svelte template AST — only `<script>` bodies are AST-scanned; `{#if}` / `on:click` identity handlers are soft-warn only. Other known limits: cross-file helpers, multi-hop wrappers, dynamic/computed callees, object-literal helpers.
 
-### Cohort identity (always-on — never behind a flag)
+### Cohort identity (always-on — never behind a control point)
 
 State the repo's identity contract per surface, with concrete symbols and call sites from Step 6b:
 
-| Surface    | Contract                                                                                                                                                                                                                |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Web**    | After auth: bind the subject (`reloadFireweaveFlags(user.id)`, or `identify(user.id)` + reload for a direct-vendor harness). On sign-out / 401: reset + reload so the next person does not inherit the previous bucket. |
-| **Server** | Every `fw.controlPoints.getBooleanValue(...)` passes `{ targetingKey }` — the session user when there is one, otherwise a stable fallback. Missing targeting key → the provider returns the safe default (`false`).     |
+| Surface                                                   | Contract                                                                                                                                                                                                                          |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Web**                                                   | After auth: bind the subject (`reloadFireweaveFlags(user.id)`, or `identify(user.id)` + reload for a direct-vendor harness). On sign-out / 401: reset + reload so the next person does not inherit the previous bucket.           |
+| **Server**                                                | Every `fw.controlPoints.getBooleanValue(...)` passes `{ targetingKey }` — the session user when there is one, otherwise a stable fallback. Missing targeting key → the provider returns the safe default (`false`).               |
+| **Package, client profile** (web, Dart client, Swift app) | `fw.identify(user.id, props)` at sign-in AND session restore, `fw.reset()` at sign-out, in the language's spelling. Reads take no per-call targeting key: decisions follow `fw.identify`.                                         |
+| **Package, server profile**                               | `fw.identify(user.id, props)` at sign-in registers durable properties; every read passes the real user's id (`{ targetingKey }`, `EvaluationContext`, `fw.For`), and the instance key only when the server itself is the subject. |
 
-**The bind is unconditional.** Manifests declare `context.targetingKey: "userId"`, and upstream `%` ramps hash that subject id — if it rotates every visit, every session looks like a new user and no flag ever sticks. Gating the bind on a flag deadlocks: the flag evaluates with no targeting key, RAMP-1 makes the safe default `false`, so the bind never runs and the key never arrives. It fails silently as 0% adoption, which reads as a product problem rather than a wiring bug. Gate the feature that _uses_ the identity; never the bind itself.
+**The bind is unconditional.** Manifests declare `context.targetingKey: "userId"`, and upstream `%` ramps hash that subject id — if it rotates every visit, every session looks like a new user and no control point ever sticks. Gating the bind on a control point deadlocks: the control point evaluates with no targeting key, RAMP-1 makes the safe default `false`, so the bind never runs and the key never arrives. It fails silently as 0% adoption, which reads as a product problem rather than a wiring bug. Gate the feature that _uses_ the identity; never the bind itself.
 
 ### Deriving `telemetry.metrics` — a rubric, not a generator
 
@@ -1067,7 +1458,7 @@ the ramp.
 
 **When there is no prior baseline, compare the two sides instead of the past.**
 A new cache has no yesterday to compare to. Do not wait a week for one: emit the
-metric dimensioned so the flag's own cohorts are comparable — cache-hit vs
+metric dimensioned so the control point's own cohorts are comparable — cache-hit vs
 cache-miss latency, new-path vs old-path error rate — and read the DIFFERENCE.
 The ramp itself supplies the control group, which is the one thing a
 before/after comparison over a deploy boundary can never give you.
@@ -1124,17 +1515,16 @@ sure — an absent field is honest, a guessed `low` is not.
 >   metrics are adoption cannot ramp unattended, and the readiness gate will
 >   put it in manual and say so.
 
-The `manifest` argument you pass to `upsert_rollout_manifest` must match this exact shape (validated by `RolloutReadyManifestSchema` **before** anything reaches the server or disk; `safe-rollout` resolves it to build the `RolloutSpec`). `manifest.feature` must equal the `feature` argument — the row is keyed by it. Every field below is load-bearing — start from this and swap the values. Invariants the schema enforces: every `wrapPoints[].flagKey` and `telemetry.metrics[].guards` must be a declared `flags[].key`; `telemetry.dimensions` must equal `context.dimensions` (the cohort seam); a `guardrail` metric needs an OTLP-metrics-capable destination (Grafana/Datadog — **PostHog cannot ingest OTLP metrics**), so keep adoption metrics as `role: "adoption"` unless you wire a metrics vendor.
+The `manifest` argument you pass to `upsert_rollout_manifest` must match this exact shape (validated by `RolloutReadyManifestSchema` **before** anything reaches the server or disk; `safe-rollout` resolves it to build the `RolloutSpec`). `manifest.feature` must equal the `feature` argument — the row is keyed by it. Every field below is load-bearing — start from this and swap the values. Write **`"schema": 3`**: the control-point names below are the only ones a new manifest uses (schemas 1 and 2 stay readable for manifests already written). Each surface the change touches is one `surfaces[]` entry with its own `stampId`, wrap points, harness and metrics; `controlPoints`, `context` and the cohort-seam `telemetry.dimensions` stay top-level. Invariants the schema enforces: every `surfaces[].wrapPoints[].controlPointKey` and `surfaces[].telemetry.metrics[].guards` must be a declared `controlPoints[].key`; `telemetry.dimensions` must equal `context.dimensions` (the cohort seam); a `guardrail` metric needs an OTLP-metrics-capable destination (Grafana/Datadog — **PostHog cannot ingest OTLP metrics**), so keep adoption metrics as `role: "adoption"` unless you wire a metrics vendor.
 
 ```json
 {
-  "schema": 1,
+  "schema": 3,
   "feature": "<feature-slug>",
   "changeType": "new-feature",
   "userFacing": true,
   "change": {
     "id": "chg_<ULID>",
-    "stampId": "stmp_<ULID>",
     "title": "<human title>",
     "description": "<what changes, one line>",
     "author": "<you@org>",
@@ -1146,8 +1536,8 @@ The `manifest` argument you pass to `upsert_rollout_manifest` must match this ex
     "status": "in-progress",
     "migration": "<path/to/migration.sql or omit>"
   },
-  "flagTelemetryProvider": "connected:posthog",
-  "flags": [
+  "controlPointTelemetryProvider": "connected:posthog",
+  "controlPoints": [
     {
       "key": "<feature-slug>",
       "default": false,
@@ -1157,67 +1547,550 @@ The `manifest` argument you pass to `upsert_rollout_manifest` must match this ex
       "tags": ["<area>"]
     }
   ],
-  "wrapPoints": [
+  "context": { "targetingKey": "userId", "dimensions": [] },
+  "telemetry": { "logs": [], "traces": [], "dimensions": [] },
+  "surfaces": [
     {
-      "file": "packages/api/src/application/use-cases/<UseCase>.ts",
-      "symbol": "<UseCase>.execute",
-      "wrapStyle": "method-guard",
-      "flagKey": "<feature-slug>"
+      "stampId": "stmp_<ULID>",
+      "wrapPoints": [
+        {
+          "file": "packages/api/src/application/use-cases/<UseCase>.ts",
+          "symbol": "<UseCase>.execute",
+          "wrapStyle": "method-guard",
+          "controlPointKey": "<feature-slug>"
+        }
+      ],
+      "harness": {
+        "surface": "ts-server",
+        "path": "packages/api/src/fireweave/fw-harness.<ext>",
+        "rolloutCredentialEnv": "FW_PROJECT_API_KEY",
+        "controlPoints": {
+          "api": "control-points",
+          "sdk": "server",
+          "devProvider": "in-memory",
+          "rolloutProvider": "connected:fireweave"
+        },
+        "telemetry": {
+          "api": "otel",
+          "devExporter": "console",
+          "rolloutTransport": "otlp",
+          "semconv": "fireweave/rollout-otel-semconv-v1",
+          "signals": {}
+        }
+      },
+      "telemetry": {
+        "metrics": [
+          {
+            "name": "<an error/latency metric this app ALREADY emits>",
+            "role": "guardrail",
+            "direction": "up-bad",
+            "guards": "<feature-slug>",
+            "guard": { "breachSeverity": "page", "action": "rollback" }
+          }
+        ]
+      }
     }
   ],
-  "context": { "targetingKey": "userId", "dimensions": [] },
-  "telemetry": {
-    "metrics": [
-      {
-        "name": "<an error/latency metric this app ALREADY emits>",
-        "role": "guardrail",
-        "direction": "up-bad",
-        "guards": "<feature-slug>",
-        "guard": { "breachSeverity": "page", "action": "rollback" }
-      }
-    ],
-    "logs": [],
-    "traces": [],
-    "dimensions": []
-  },
-  "harness": {
-    "surface": "ts-server",
-    "path": "packages/api/src/fireweave/fw-harness.<ext>",
-    "rolloutCredentialEnv": "FW_PROJECT_API_KEY",
-    "posthogProjectId": "<prod-tier env's PostHog projectId>",
-    "flags": {
-      "api": "control-points",
-      "sdk": "server",
-      "devProvider": "in-memory",
-      "rolloutProvider": "connected:fireweave"
-    },
-    "telemetry": {
-      "api": "otel",
-      "devExporter": "console",
-      "rolloutTransport": "otlp",
-      "semconv": "fireweave/rollout-otel-semconv-v1",
-      "signals": {}
-    }
+  "metricsCheck": {
+    "state": "bound",
+    "environment": "production",
+    "checkedAt": "2026-10-07T22:00:00.000Z"
   }
 }
 ```
 
-**`flags.api` is `"control-points"` on every NEW manifest.** The schema accepts
-`"openfeature"` too and always will — manifests written before the v1 cutover are
-already in the wild and must keep validating — but that value now describes a
-harness on the retired surface. It is a widening, never a swap: do not rewrite an
-existing manifest's `api` as a drive-by, and do not write `"openfeature"` on
-anything new.
+**`metricsCheck` is the change's one capabilities read** (**Before you add a
+metric**): `bound`, `unbound`, `needs-attention`, or `unknown` when the read
+failed. Anything but `bound` means no metric was declared on purpose and the
+change ramps manually.
 
-For a **web** surface use `harness.surface: "web"`, `flags.sdk: "web"`, `rolloutCredentialEnv: "PUBLIC_FW_PROJECT_API_KEY"`, and the web harness path. `harness.posthogProjectId` is the **prod-tier** environment's project id (the phantom-ramp guard compares it to what `flag.control` ramps — see **Credential env canon** and `project.json.rolloutReady.environments`).
+**`harness.controlPoints.api` is `"control-points"` on every NEW manifest.** The
+schema accepts `"openfeature"` too and always will — manifests written before the
+v1 cutover are already in the wild and must keep validating — but that value now
+describes a harness on the retired surface. It is a widening, never a swap: do not
+rewrite an existing manifest's `api` as a drive-by, and do not write
+`"openfeature"` on anything new.
 
-**RAMP-1 — off until ramp:** boolean `flags[].default` MUST be `false`. Eval sites MUST use `fw.controlPoints.getBooleanValue(key, false, …)`. Prod-tier ON is the ramp (or an explicit PostHog kill-switch at 100%), never the call-site default.
+For a **web** surface use `harness.surface: "web"`, `harness.controlPoints.sdk: "web"`, `rolloutCredentialEnv: "PUBLIC_FW_PROJECT_API_KEY"`, and the web harness path.
 
-**Local vs prod control (standard):** local dogfood ON → that surface's `makeDevProvider()` `devFlags: { '<key>': true }`; prod-tier → connected vendor via FireWeave; eval site + manifest always `false`. Never use `fw.controlPoints.getBooleanValue(key, true)` for "works on my laptop" — that is also the prod fallback when the provider flag is missing. Do not open new `ramp1Exception` entries; remediate legacy inverted kill-switches only via: create PostHog flag at 100% ON → verify serving → flip defaults to `false` → prove kill in staging.
+For a **package** surface the harness block says so: `"kind": "package"`, `path` = the surface's entrypoint (the file carrying the start call), `rolloutCredentialEnv` = `"FIREWEAVE_KEY"` (server profile) or `"FIREWEAVE_BROWSER_KEY"` (client profile), `controlPoints.devProvider: "control-points-file"`, and `controlPoints.sdk` `"server"` or `"web"` (a client profile's synchronous reads).
+
+**RAMP-1 — off until ramp:** boolean `controlPoints[].default` MUST be `false`. Eval sites MUST use `fw.controlPoints.getBooleanValue(key, false, …)`. Prod-tier ON is the ramp (or an explicit PostHog kill-switch at 100%), never the call-site default.
+
+**Local vs prod control (standard):** local dogfood ON → that surface's control-points file (package surface: `'<key>': { local: true }` or the language's equivalent) or `makeDevProvider()` `devFlags: { '<key>': true }` (scaffold surface); prod-tier → connected vendor via FireWeave; eval site + manifest always `false`. Never use `fw.controlPoints.getBooleanValue(key, true)` for "works on my laptop" — that is also the prod fallback when the control point is missing at the provider. Do not open new `ramp1Exception` entries; remediate legacy inverted kill-switches only via: create PostHog flag at 100% ON → verify serving → flip defaults to `false` → prove kill in staging.
 
 ### Ship
 
 Run `/fw-rollout` only after `assert_dev_checklist` passes — it **promotes** rollout-ready work; it does not wrap code.
+
+---
+
+## Agent instructions — SDK configuration sections (Step 7, package surfaces)
+
+`.fireweave/agent-instructions.md` gets one of these per package surface present,
+**verbatim** — fill the `<placeholders>` from Steps 4–6 and change nothing else. They
+carry every option, its environment or build variable, its default, the mode rule
+and the agent rules for that SDK. `<control-points-path>` is always the file Step 4
+wrote; `<entrypoint>` / `<entry>` / `<entrypoints>` / `<mains>` are the files Step 6
+put the start call in.
+
+### ts-server — placeholders `<entrypoint>`, `<control-points-path>`, `<start-path>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (ts-server)
+
+This app uses `@fireweaveai/server-sdk/start`. All FireWeave setup is in two files:
+
+| File                                                      | Purpose                                                                                                 |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (src/fireweave/control-points.ts) | Every control point the app reads, with the value served in **local mode**.                             |
+| `<start-path>` (src/fireweave/start.ts)                   | `start({ controlPoints })` plus optional overrides. Imported as the **first** import of `<entrypoint>`. |
+
+Call sites import `fw` from `@fireweaveai/server-sdk/start`. Never import `initFireweave`, never call
+`start()` anywhere else, and never add a second FireWeave setup file.
+
+### Options and overrides
+
+Each value resolves as: `start()` option → env var → legacy name (warns once) → default.
+Empty values count as unset.
+
+| Option          | Env var                                          | Default               | Use it when                                                                                                                                                       |
+| --------------- | ------------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `controlPoints` | —                                                | `{}`                  | Always: pass the object from `<control-points-path>`.                                                                                                             |
+| `mode`          | —                                                | inferred              | You must force `'local'` (no network, values from the control-points file) or `'remote'`. `'remote'` without a key fails at start. `'local'` ignores any key.     |
+| `environment`   | `FIREWEAVE_ENV`, then `APP_ENV`, then `NODE_ENV` | —                     | The app names its environment in another variable: `environment: process.env.DEPLOY_STAGE`.                                                                       |
+| `url`           | `FIREWEAVE_URL`                                  | from the SDK build    | Only for a self-hosted or local fw-server. A staging SDK build (`x.y.z-rc.N`) calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`. |
+| `key`           | `FIREWEAVE_KEY`                                  | —                     | The key comes from your own secret store instead of the environment.                                                                                              |
+| `instanceId`    | `FIREWEAVE_INSTANCE_ID`                          | hash of the host name | Server-subject reads need a specific stable id.                                                                                                                   |
+
+Legacy names `FW_PROJECT_API_KEY`, `FW_API_URL` and `FW_ATTEST_URL` still work with a warning.
+Rename them; never add new ones. `FW_ENV` is no longer read: use `FIREWEAVE_ENV`.
+
+### How the mode is chosen
+
+1. `mode` option set → that mode.
+2. A key is present → **remote** (fw-server decides every value).
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**
+   (values from `<control-points-path>`; nothing is sent anywhere).
+4. Anything else, including no environment name → **start fails**, naming `FIREWEAVE_KEY`.
+   That is deliberate: a deploy without its key must fail, not silently serve defaults.
+
+### Rules for agents
+
+- **New control point:** add it to `<control-points-path>` as `'<key>': { local: true }` while you build
+  the feature (set `false` to see the old path locally). Never seed values anywhere else.
+- **Call sites:** `await fw.controlPoints.getBooleanValue('<key>', false, { targetingKey: user.id })`
+  with `// @fireweave-controlpoint <key>` on the line above. The default is always `false` (RAMP-1).
+  Always pass the real user's id; use `fw.instanceKey()` only when the server itself is the subject
+  (cron, boot, migrations).
+- **Identity:** `await fw.identify(user.id, { ...durable properties })` at sign-in, unconditionally,
+  never inside a flag branch.
+- **Never** put a key or URL value in code, `.env.example`, or any committed file. Never use a
+  browser key (`fw_public_…`) here; `start()` rejects it.
+- **Debugging:** `fw.status()` shows the mode, why it was chosen, the channel, the host and where
+  the key came from (never the key). A line starting `[fireweave:local]` at boot means local mode.
+  Reads never throw: on any failure they return the default you passed.
+- Do not change `<start-path>` options to fix a failing local run. Set `NODE_ENV=development`
+  (or `FIREWEAVE_ENV`) in the dev environment instead, unless the user asks for an override.
+```
+
+### web — placeholders `<entry>`, `<control-points-path>`, `<start-path>`, `<build-config>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (web)
+
+This app uses `@fireweaveai/web-sdk/start`. All FireWeave setup is in three places:
+
+| File                                                      | Purpose                                                                                                                           |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (src/fireweave/control-points.ts) | Every control point the app reads, with the value served in **local mode**.                                                       |
+| `<start-path>` (src/fireweave/start.ts)                   | `start({ controlPoints })` plus optional overrides. Imported **first** by `<entry>`, which renders after `ready`.                 |
+| `<build-config>`                                          | `fireweave()` (Vite) or `fireweaveDefine()` (other bundlers): reads the build variables below and fails the build on a bad setup. |
+
+Call sites import `fw` from `@fireweaveai/web-sdk/start`. Never import `initFireweave`, never call
+`start()` anywhere else, and never add a second FireWeave setup file.
+
+### Options and overrides
+
+Each value resolves as: `start()` option → build variable (read by the build helper) → default.
+Empty values count as unset. The browser itself reads no environment.
+
+| Option          | Build variable                                                                                               | Default             | Use it when                                                                                                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `controlPoints` | —                                                                                                            | `{}`                | Always: pass the object from `<control-points-path>`.                                                                                                                                      |
+| `mode`          | —                                                                                                            | inferred            | You must force `'local'` (no network, values from the control-points file) or `'remote'`. `'remote'` without a key fails. `'local'` ignores any key.                                       |
+| `environment`   | `FIREWEAVE_ENV`, then `APP_ENV`; the dev server and Vitest also use Vite's mode (`/define`: then `NODE_ENV`) | —                   | The build names its environment another way: `fireweave({ environment: process.env.DEPLOY_STAGE })`.                                                                                       |
+| `url`           | `FIREWEAVE_URL`                                                                                              | from the SDK build  | A self-hosted fw-server, or a same-origin proxy path such as `/fw`. A staging SDK build (`x.y.z-rc.N`) calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`. |
+| `key`           | `FIREWEAVE_BROWSER_KEY`                                                                                      | —                   | Almost never in code: the build variable is the normal path. Browser keys only (`fw_public_…`).                                                                                            |
+| `persistence`   | —                                                                                                            | `'localStorage'`    | Consent: `'memory'` stores nothing until `fw.setPersistence('localStorage')`.                                                                                                              |
+| `deviceId`      | —                                                                                                            | stored `dev_<uuid>` | Reuse the analytics anonymous id as FireWeave's anonymous key.                                                                                                                             |
+
+`FIREWEAVE_BROWSER_KEY` belongs in the **build** environment (CI, the host's build settings), never
+in a developer `.env`: a key there makes `vite dev` call fw-server instead of serving the control-points file.
+`VITE_FW_PROJECT_API_KEY` and `PUBLIC_FW_PROJECT_API_KEY` are no longer read.
+
+### How the mode is chosen
+
+1. `mode` option set → that mode.
+2. A browser key is present → **remote** (fw-server decides every value).
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**
+   (values from `<control-points-path>`; nothing is sent anywhere). `vite dev` and Vitest are local by default.
+4. Anything else → the **build fails**, naming `FIREWEAVE_BROWSER_KEY`. A production build never
+   becomes local because of `--mode development`.
+
+### Rules for agents
+
+- **New control point:** add it to `<control-points-path>` as `'<key>': { local: true }` while you build
+  the feature (set `false` to see the old path locally). Never seed values anywhere else.
+- **Call sites:** `fw.controlPoints.getBooleanValue('<key>', false)` with
+  `// @fireweave-controlpoint <key>` on the line above. Reads are synchronous and never throw; the
+  default is always `false` (RAMP-1). Never pass a `targetingKey`: in the browser, decisions follow
+  `fw.identify`.
+- **Identity:** `await fw.identify(user.id, { ...durable properties })` at sign-in and session
+  restore, `await fw.reset()` at sign-out, unconditionally and never inside a flag branch.
+- **Re-render:** components that render before the first decision arrive, or that must follow a
+  sign-in, re-render through `fw.subscribe(...)`.
+- **Never** put a key or URL value in code or any committed file. Never use a server key
+  (`project-api-key_…`) or `FIREWEAVE_KEY` in browser code, and never add `FIREWEAVE` to `envPrefix`.
+  The build fails on all of these.
+- **Debugging:** `fw.status()` shows the state, mode and why, the channel, the host, where the key
+  came from (never the key) and a `problem`: `missing-key`, `server-key`, `wrong-key-family`,
+  `insecure-url`, `key-rejected` (fw-server refused the key) or `unreachable` (offline, an ad
+  blocker, a firewall or a CSP `connect-src` rule; a same-origin proxy through `FIREWEAVE_URL` fixes
+  most of these). A line starting `[fireweave:local]` means local mode.
+- Do not change `<start-path>` or `<build-config>` options to fix a failing local run. Set
+  `FIREWEAVE_ENV=development` for that run instead, unless the user asks for an override.
+```
+
+### Python — placeholders `<entrypoints>`, `<control-points-path>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (Python)
+
+This app uses `fireweave.start`. All FireWeave setup is:
+
+| File                                                        | Purpose                                                                                                         |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (fireweave_setup/control_points.py) | Every control point the app reads, with the value served in **local mode**.                                     |
+| `<entrypoints>`                                             | `start(control_points=control_points)` as the first lines of every process entrypoint, plus optional overrides. |
+
+Call sites import `fw` from `fireweave.start`. Never call `init_fireweave`, never call `start()`
+outside the entrypoints, and never create a package named `fireweave` in this repo.
+
+### Options and overrides
+
+Each value resolves as: `start()` keyword → env var → legacy name (warns once) → default.
+Empty values count as unset.
+
+| Option           | Env var                         | Default                    | Use it when                                                                                                                                                                         |
+| ---------------- | ------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control_points` | —                               | `{}`                       | Always: pass the object from `<control-points-path>`.                                                                                                                               |
+| `mode`           | —                               | inferred                   | You must force `"local"` (no network, values from the control-points file) or `"remote"`. `"remote"` without a key fails at start. `"local"` ignores any key.                       |
+| `environment`    | `FIREWEAVE_ENV`, then `APP_ENV` | —                          | The app names its environment another way: `environment=settings.DEPLOY_STAGE`.                                                                                                     |
+| `url`            | `FIREWEAVE_URL`                 | from the installed version | Only for a self-hosted or local fw-server. A prerelease install (staging builds are `X.Y.ZrcN`) calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`. |
+| `key`            | `FIREWEAVE_KEY`                 | —                          | The key comes from your own secret store. Project keys (`project-api-key_…`) only.                                                                                                  |
+| `instance_id`    | `FIREWEAVE_INSTANCE_ID`         | hash of the host name      | Server-subject reads need a specific stable id.                                                                                                                                     |
+
+Legacy `FW_PROJECT_API_KEY`, `FW_API_URL` and `FW_ATTEST_URL` still work with a warning. Rename
+them; never add new ones. `FW_ENV` is no longer read. Processes that never run an entrypoint
+(`manage.py`, spawned children) start from the environment alone, so put shared settings in
+`FIREWEAVE_*` variables rather than options.
+
+### How the mode is chosen
+
+1. `mode` set → that mode.
+2. A key is present → **remote** (fw-server decides every value).
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**.
+4. Anything else → `start()` raises `ConfigurationError` naming `FIREWEAVE_KEY`.
+
+### Rules for agents
+
+- **New control point:** add `"<key>": {"local": True}` to `<control-points-path>` while you build it.
+- **Call sites:** `fw.control_points.get_boolean_value("<key>", False, EvaluationContext(user_id))`
+  with `# @fireweave-controlpoint <key>` above it. Default always `False` (RAMP-1). In `async def`
+  code: `await asyncio.to_thread(lambda: fw.control_points.get_boolean_value(...))`. Never pass an
+  unguarded `str(user.id)` (anonymous users would share `"None"`). `fw.instance_key()` only when
+  the server itself is the subject.
+- **Identity:** `fw.identify(user_id, {...durable properties})` at sign-in, unconditionally, never
+  inside a flag branch.
+- **Never** put a key or URL value in code or committed files, and never use a browser key
+  (`fw_public_…`); `start()` rejects it.
+- **Debugging:** `fw.status()` shows state, mode and why, channel, host and key source (never the
+  key). Reads never raise; on failure they return your default.
+- To fix a failing local run, set `FIREWEAVE_ENV=development`; do not change `start()` options
+  unless the user asks.
+```
+
+### Go — placeholders `<mains>`, `<control-points-path>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (Go)
+
+This app uses package `github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3/fw`. All FireWeave setup is:
+
+| File                                                           | Purpose                                                                                                       |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (internal/fireweave/control_points.go) | Every control point the app reads, with the value served in **local mode**.                                   |
+| `<mains>`                                                      | `fw.Start(fw.Options{ControlPoints: ...})` in the serving path after config loading, plus optional overrides. |
+
+Never call `fireweave.Init`, never import the SDK's `application` or `infrastructure` packages,
+and never call `fw.Start` anywhere but the mains.
+
+### Options and overrides
+
+Each value resolves as: `fw.Options` field → env var → legacy name (warns once) → default.
+Empty values count as unset.
+
+| Option          | Env var                         | Default                 | Use it when                                                                                                                                             |
+| --------------- | ------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ControlPoints` | —                               | none                    | Always: pass the map from `<control-points-path>`.                                                                                                      |
+| `Mode`          | —                               | inferred                | You must force `fw.ModeLocal` or `fw.ModeRemote`. Remote without a key is a start error; local ignores any key.                                         |
+| `Environment`   | `FIREWEAVE_ENV`, then `APP_ENV` | —                       | The app names its environment another way. Never pass an app default like `"dev"`.                                                                      |
+| `URL`           | `FIREWEAVE_URL`                 | from the module version | Only for a self-hosted or local fw-server. A `-rc.N` module version calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`. |
+| `Key`           | `FIREWEAVE_KEY`                 | —                       | The key comes from your own secret store. Project keys only.                                                                                            |
+| `InstanceID`    | `FIREWEAVE_INSTANCE_ID`         | hash of the host name   | Replicas share a host name, or server-subject reads need a specific id.                                                                                 |
+| `Env`           | —                               | the process             | Tests and `run(getenv)`-style mains.                                                                                                                    |
+| `Log`           | —                               | `slog.Default()`        | Route `[fireweave]` lines to the app's logger.                                                                                                          |
+
+Legacy `FW_PROJECT_API_KEY`, `FW_API_URL` and `FW_ATTEST_URL` still work with a warning. Rename them.
+
+### How the mode is chosen
+
+1. `Mode` set → that mode.
+2. A key is present → **remote**.
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**.
+4. Anything else → `fw.Start` returns a Configuration error naming `FIREWEAVE_KEY`.
+
+### Rules for agents
+
+- **New control point:** add `"<key>": {Local: true}` to `<control-points-path>` while you build it.
+- **Call sites:** `fw.ControlPoints().GetBooleanValue("<key>", false, fw.For(user.ID))` with
+  `// @fireweave-controlpoint <key>` above it. Default always `false` (RAMP-1).
+  `fw.For(fw.InstanceKey())` only when the server itself is the subject.
+- **Identity:** `go func() { _ = fw.Identify(ctx, user.ID, props) }()` at sign-in, never inside a
+  flag branch.
+- **Never** put a key or URL value in code or committed files, and never use a browser key.
+- **Debugging:** `fw.Status()` shows state, mode and why, channel, host and key source (never the
+  key). Reads never fail; on failure they return your default.
+- To fix a failing local run, set `FIREWEAVE_ENV=development`; do not change `fw.Options` unless
+  the user asks.
+```
+
+### Java — placeholders `<entrypoint>`, `<control-points-path>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (Java)
+
+This app uses `ai.fireweave.sdk.start.Fw`. All FireWeave setup is:
+
+| File                                                  | Purpose                                                                                                                         |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (FireweaveControlPoints.java) | Every control point the app reads, with the value served in **local mode**.                                                     |
+| `<entrypoint>`                                        | `Fw.start(StartOptions.builder().controlPoints(FireweaveControlPoints.CONTROL_POINTS).build())` first, plus optional overrides. |
+
+Never call `Fireweave.init`, never construct adapters, and never call `Fw.start` anywhere else.
+
+### Options and overrides
+
+Each value resolves as: `StartOptions` builder field → env var → legacy name (warns once) → default.
+Empty values count as unset.
+
+| Option          | Env var                         | Default               | Use it when                                                                                                                                           |
+| --------------- | ------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `controlPoints` | —                               | none                  | Always: pass `FireweaveControlPoints.CONTROL_POINTS`.                                                                                                 |
+| `mode`          | —                               | inferred              | You must force `Mode.LOCAL` or `Mode.REMOTE`. Remote without a key is a start error; local ignores any key.                                           |
+| `environment`   | `FIREWEAVE_ENV`, then `APP_ENV` | —                     | The app names its environment another way. Spring profiles are not read; pass the stage explicitly if needed. Never pass an app default like `"dev"`. |
+| `url`           | `FIREWEAVE_URL`                 | from the SDK version  | Only for a self-hosted or local fw-server. A `-rc.N` artifact calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`.     |
+| `key`           | `FIREWEAVE_KEY`                 | —                     | The key comes from your own secret store. Project keys only.                                                                                          |
+| `instanceId`    | `FIREWEAVE_INSTANCE_ID`         | hash of the host name | Replicas share a host name, or server-subject reads need a specific id.                                                                               |
+
+Legacy `FW_PROJECT_API_KEY`, `FW_API_URL` and `FW_ATTEST_URL` still work with a warning. Rename them.
+
+### How the mode is chosen
+
+1. `mode` set → that mode.
+2. A key is present → **remote**.
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**.
+4. Anything else → `Fw.start` throws a Configuration `FireweaveException` naming `FIREWEAVE_KEY`.
+
+### Rules for agents
+
+- **New control point:** add `"<key>", LocalControlPoint.local(true)` to `<control-points-path>` while you build it.
+- **Call sites:** `Fw.controlPoints().getBooleanValue("<key>", false, EvaluationContext.builder().targetingKey(userId).build())`
+  with `// @fireweave-controlpoint <key>` above it. Default always `false` (RAMP-1).
+  `Fw.instanceKey()` as the targeting key only when the server itself is the subject.
+- **Identity:** `Fw.identify(userId, Map.of(...))` at sign-in, never inside a flag branch.
+- **Never** put a key or URL value in code or committed files, and never use a browser key.
+- **Debugging:** `Fw.status()` shows state, mode and why, channel, host and key source (never the
+  key). Reads never throw; on failure they return your default.
+- To fix a failing local run, set `FIREWEAVE_ENV=development`; do not change `StartOptions` unless
+  the user asks.
+```
+
+### Rust — placeholders `<mains>`, `<control-points-path>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (Rust)
+
+This app uses `fireweave::start`. All FireWeave setup is:
+
+| File                                                      | Purpose                                                                                                                                                       |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (src/fireweave_control_points.rs) | Every control point the app reads, with the value served in **local mode**.                                                                                   |
+| `<mains>`                                                 | `fireweave::start::start(StartOptions { control_points: fireweave_control_points::control_points(), ..Default::default() })?` first, plus optional overrides. |
+
+Never call `init_fireweave`, never construct adapters, never call `start` anywhere but the mains,
+and never name a local module `fireweave` (it shadows the crate).
+
+### Options and overrides
+
+Each value resolves as: `StartOptions` field → env var → legacy name (warns once) → default.
+Empty values count as unset.
+
+| Option           | Env var                         | Default                | Use it when                                                                                                                                    |
+| ---------------- | ------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control_points` | —                               | none                   | Always: pass `fireweave_control_points::control_points()`.                                                                                     |
+| `mode`           | —                               | inferred               | You must force `Mode::Local` or `Mode::Remote`. Remote without a key is a start error; local ignores any key.                                  |
+| `environment`    | `FIREWEAVE_ENV`, then `APP_ENV` | —                      | The app names its environment another way. Never pass an app default like `"dev"`.                                                             |
+| `url`            | `FIREWEAVE_URL`                 | from the crate version | Only for a self-hosted or local fw-server. A `-rc.N` crate calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`. |
+| `key`            | `FIREWEAVE_KEY`                 | —                      | The key comes from your own secret store. Project keys only.                                                                                   |
+| `instance_id`    | `FIREWEAVE_INSTANCE_ID`         | hash of the host name  | Replicas share a host name, or server-subject reads need a specific id.                                                                        |
+| `env`, `log`     | —                               | the process, stderr    | Tests and custom log sinks.                                                                                                                    |
+
+Rust does not load `.env` files. For local runs, set `FIREWEAVE_ENV = "development"` under `[env]`
+in `.cargo/config.toml` at the workspace root (cargo only; never seen by the deployed binary).
+Legacy `FW_PROJECT_API_KEY`, `FW_API_URL` and `FW_ATTEST_URL` still work with a warning.
+
+### How the mode is chosen
+
+1. `mode` set → that mode.
+2. A key is present → **remote**.
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**.
+4. Anything else → `start` returns a Configuration `FireweaveError` naming `FIREWEAVE_KEY`.
+
+### Rules for agents
+
+- **New control point:** add `("<key>", LocalControlPoint::local(true))` to `<control-points-path>` while you build it.
+- **Call sites:** `fireweave::start::control_points().get_boolean_value("<key>", false, Some(&ctx))`
+  with `// @fireweave-controlpoint <key>` above it. Default always `false` (RAMP-1). Reads block:
+  in async handlers wrap them in `tokio::task::spawn_blocking`.
+- **Identity:** `let _ = fireweave::start::identify(&user.id, [...]);` at sign-in, never inside a
+  flag branch.
+- **Never** put a key or URL value in code or committed files, and never use a browser key.
+- **Debugging:** `fireweave::start::status()` shows state, mode and why, channel, host and key
+  source (never the key). Reads never fail; on failure they return your default.
+- To fix a failing local run, set `FIREWEAVE_ENV=development`; do not change `StartOptions`
+  unless the user asks.
+```
+
+### Dart — placeholders `<client.dart | server.dart>`, `<entry>`, `<control-points-path>`
+
+```markdown
+## FireWeave SDK: configuration and overrides (Dart)
+
+This app uses `package:fireweave/<client.dart | server.dart>`. All FireWeave setup is:
+
+| File                                                        | Purpose                                                                                                                                               |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (lib/fireweave/control_points.dart) | Every control point the app reads, with the value served in **local mode**.                                                                           |
+| `<entry>`                                                   | `await Fireweave.start(controlPoints: controlPoints)` before `runApp` / before serving, plus optional overrides. Every isolate that reads must start. |
+
+Never call `initFireweave`, never import `server.dart` in a Flutter app, and never call `start`
+anywhere else.
+
+### Options and overrides
+
+Each value resolves as: `Fireweave.start` option → client compile-time define / server environment
+variable → default. Empty values count as unset.
+
+| Option                      | Client define           | Server env var                  | Default                | Use it when                                                                                                                                  |
+| --------------------------- | ----------------------- | ------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `controlPoints`             | —                       | —                               | `{}`                   | Always: pass the map from `<control-points-path>`.                                                                                           |
+| `mode`                      | —                       | —                               | inferred               | You must force local or remote.                                                                                                              |
+| `environment`               | `FIREWEAVE_ENV`         | `FIREWEAVE_ENV`, then `APP_ENV` | —                      | The build or process names its environment another way.                                                                                      |
+| `url`                       | `FIREWEAVE_URL`         | `FIREWEAVE_URL`                 | from the SDK build     | Only for a self-hosted or local fw-server. A `-rc.N` SDK calls `staging-app-server.fireweave.ai`; any other calls `app-server.fireweave.ai`. |
+| `key`                       | `FIREWEAVE_BROWSER_KEY` | `FIREWEAVE_KEY`                 | —                      | Almost never in code. Client: browser keys (`fw_public_…`) only. Server: project keys only.                                                  |
+| `deviceId`, `deviceIdStore` | —                       | —                               | in-memory `dev_<uuid>` | Client: reuse an analytics id, or persist the id after consent.                                                                              |
+| `instanceId`                | —                       | `FIREWEAVE_INSTANCE_ID`         | hash of the host name  | Server: replicas share a host name.                                                                                                          |
+
+Client defines are compile-time: a change needs a rebuild, not a hot reload. `FIREWEAVE_KEY` must
+never be a define. `--dart-define=FIREWEAVE_ENV=development` belongs only in debug launch configs.
+
+### How the mode is chosen
+
+1. `mode` set → that mode.
+2. A key is present → **remote**.
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**.
+4. Anything else → client: `fw.status.state` is `failed` and reads serve defaults (it never
+   throws); server: `Fireweave.start` throws a Configuration error naming `FIREWEAVE_KEY`.
+
+### Rules for agents
+
+- **New control point:** add `'<key>': LocalControlPoint.local(true)` to `<control-points-path>` while you build it.
+- **Call sites:** `fw.controlPoints.getBooleanValue('<key>', false)` with
+  `// @fireweave-controlpoint <key>` above it. Synchronous, safe in `build()`. Default always
+  `false` (RAMP-1). Never pass a per-call targeting key on the client.
+- **Identity (client):** `await fw.identify(user.id, properties: {...})` at sign-in and session
+  restore, `await fw.reset()` at sign-out, never inside a flag branch.
+- **Never** put a key in source or a committed define file; never use a project key in a Flutter app.
+- **Debugging:** `fw.status` shows state, mode and why, channel, host, key source and `problem`
+  (never the key). A line starting `[fireweave:local]` means local mode.
+```
+
+### Swift — placeholders `<entry>`, `<control-points-path>`
+
+Rule 4 follows the shipped SDK, where an app start never throws.
+
+```markdown
+## FireWeave SDK: configuration and overrides (Swift)
+
+This app uses the `FireweaveStart` product. All FireWeave setup is:
+
+| File                                                        | Purpose                                                                                                                 |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `<control-points-path>` (FireweaveLocalControlPoints.swift) | Every control point the app reads, with the value served in **local mode**.                                             |
+| `<entry>`                                                   | `startFireweave(controlPoints: appControlPoints)` in `App.init()` / `didFinishLaunching` (app) or `configure` (server). |
+
+Never call `initFireweave` and never call `startFireweave` anywhere else.
+
+### Options and overrides
+
+Each value resolves as: `startFireweave` argument → app Info.plist value / server environment
+variable → default. Empty values count as unset.
+
+| Option          | App (Info.plist)                                                                      | Server (env var)                | Default               | Use it when                                                              |
+| --------------- | ------------------------------------------------------------------------------------- | ------------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `controlPoints` | —                                                                                     | —                               | `[:]`                 | Always: pass `appControlPoints`.                                         |
+| `mode`          | —                                                                                     | —                               | inferred              | You must force `.local` or `.remote`.                                    |
+| `environment`   | `FIREWEAVE_ENV`                                                                       | `FIREWEAVE_ENV`, then `APP_ENV` | —                     | The build or process names its environment another way.                  |
+| `url`           | `FIREWEAVE_URL`                                                                       | `FIREWEAVE_URL`                 | from the SDK build    | Only for a self-hosted or local fw-server.                               |
+| `key`           | `FIREWEAVE_BROWSER_KEY` (`$(FIREWEAVE_BROWSER_KEY)` from an untracked xcconfig or CI) | `FIREWEAVE_KEY`                 | —                     | Almost never in code. App: browser keys only. Server: project keys only. |
+| `persistence`   | —                                                                                     | —                               | `.userDefaults`       | App consent: `.memory` until the visitor agrees.                         |
+| `deviceId`      | —                                                                                     | —                               | stored `dev_<UUID>`   | App: reuse an analytics id.                                              |
+| `instanceId`    | —                                                                                     | `FIREWEAVE_INSTANCE_ID`         | hash of the host name | Server: replicas share a host name.                                      |
+
+### How the mode is chosen
+
+1. `mode` set → that mode.
+2. A key is present → **remote**.
+3. No key, and the environment name is `development`, `dev`, `local` or `test` → **local**. An app
+   debug build with no key and no environment name also counts as development.
+4. Anything else → app: `fw.status.state` is `.failed`, the reason is in `fw.status.problem`, and
+   reads serve defaults (it never throws); server: `try startFireweave(FireweaveStartOptions(...))`
+   throws a configuration error naming `FIREWEAVE_KEY`, and the one-line form stops the process at launch.
+
+### Rules for agents
+
+- **New control point:** add `"<key>": .local(true)` to `<control-points-path>` while you build it.
+- **Call sites:** `fw.controlPoints.getBooleanValue("<key>", default: false)` with
+  `// @fireweave-controlpoint <key>` above it. Synchronous; default always `false` (RAMP-1).
+- **Identity (app):** `await fw.identify(user.id, properties: [...])` at sign-in and session
+  restore, `await fw.reset()` at sign-out, never inside a flag branch.
+- **Never** put a key literal in the workspace (Info.plist uses `$(FIREWEAVE_BROWSER_KEY)`), and
+  never use a project key in an app target.
+- **Debugging:** `fw.status` shows state, mode and why, channel, host, key source and `problem`
+  (never the key).
+```
 
 ---
 
@@ -1235,10 +2108,23 @@ alwaysApply: true
 
 Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
 
-## HARD ORDER — every user-facing or flag-gated feature
+## HARD ORDER — every user-facing or control-point-gated feature
 
-1. **FIRST** author the manifest with `rollout-server_upsert_rollout_manifest` `{ feature, manifest, baseContentHash }` (Manifest contract in agent-instructions) + mint `chg_`/`stmp_` + apply the stamp policy (per-surface stamps by default — append each stamp to its own surface's `FW_STAMPS`; one shared stamp only when single-project + every surface's harness is surface-aware). **FireWeave stores the manifest — do not write a manifest file yourself.**
+1. **FIRST** author the manifest with `rollout-server_upsert_rollout_manifest` `{ feature, manifest, baseContentHash }` (Manifest contract in agent-instructions) + mint `chg_`/`stmp_` + apply the stamp policy (per-surface stamps by default — append each stamp to its own surface's `FW_STAMPS`, in `.fireweave/stamps.<ext>` on a start-profile surface; one shared stamp only when single-project + every surface's harness is surface-aware). **FireWeave stores the manifest — do not write a manifest file yourself.**
 2. Implement behind the harness control point (`fw.controlPoints.getBooleanValue(<key>, false, ctx)`) with `// @fireweave-controlpoint <key>` at each evaluation site.
+   On a start-profile surface `fw` comes from the SDK's start module, never a harness: add
+   `'<key>'` with local value `true` to that surface's control-points file to try it locally.
+   - ts-server: `await fw.controlPoints.getBooleanValue('<key>', false, { targetingKey: user.id })` (`@fireweaveai/server-sdk/start`); `src/fireweave/control-points.ts`
+   - web: `fw.controlPoints.getBooleanValue('<key>', false)` (`@fireweaveai/web-sdk/start`, no per-call context); `src/fireweave/control-points.ts`
+   - Python: `fw.control_points.get_boolean_value('<key>', False, EvaluationContext(user_id))`; `fireweave_setup/control_points.py`
+   - Go: `fw.ControlPoints().GetBooleanValue("<key>", false, fw.For(user.ID))`; `internal/fireweave/control_points.go`
+   - Java: `Fw.controlPoints().getBooleanValue("<key>", false, ctx)`; `FireweaveControlPoints.java`
+   - Rust: `fireweave::start::control_points().get_boolean_value("<key>", false, Some(&ctx))`; `src/fireweave_control_points.rs`
+   - Dart: `fw.controlPoints.getBooleanValue('<key>', false)`; `lib/fireweave/control_points.dart`
+   - Swift: `fw.controlPoints.getBooleanValue("<key>", default: false)`; `FireweaveLocalControlPoints.swift`
+
+   Config options and overrides: `.fireweave/agent-instructions.md` → FireWeave SDK: configuration and overrides (<language>).
+
 3. **BEFORE done** call `rollout-server_assert_dev_checklist` with `{ feature }` — PARK on any block (includes dummy metrics with no emit sites). Also `reconcile` phase `build`.
 4. Backfill after coding is forbidden. Do not write repo-local `mcp/`.
 5. **Absence has names.** `never-authored` is the only one that means author a manifest. `not-fetched` → `fw sync`; `not-authorized` → the manifests are withheld, not absent (`fw login` / ask an admin); `server-unavailable` → retry; `queued` → you already authored it, drain `.fireweave/.queue/`. Never author to clear the last four.
@@ -1258,7 +2144,7 @@ Claude Code has no `alwaysApply` rule file — `CLAUDE.md` is the only always-lo
 ## 🔴 FireWeave rollout-ready — HARD ORDER (this repo is initialised)
 
 This repo is FireWeave rollout-ready ("promote, not wrap"). For **every user-facing
-OR flag-gated OR behavior-changing** change — including internal/ops/observability
+OR control-point-gated OR behavior-changing** change — including internal/ops/observability
 wiring — the rollout-ready package comes **FIRST, while you write code**, never as a
 backfill after the feature is built. Backfill breaks promote-not-wrap and is forbidden.
 
@@ -1278,9 +2164,22 @@ starts writing code.
    **FireWeave stores the manifest — do not write a manifest file yourself.**
    `baseContentHash` is required and nullable (`null` = "no row yet"); on `conflict`,
    re-apply on top of `current` and retry with `currentContentHash`. Mint
-   `chg_<ULID>` + `stmp_<ULID>`, and apply the stamp policy — per-surface stamps by default (append each stamp ONLY to its own surface's `FW_STAMPS`); one shared stamp only when the change is single-project and every participating surface's harness is surface-aware.
+   `chg_<ULID>` + `stmp_<ULID>`, and apply the stamp policy — per-surface stamps by default (append each stamp ONLY to its own surface's `FW_STAMPS`, in `.fireweave/stamps.<ext>` on a start-profile surface); one shared stamp only when the change is single-project and every participating surface's harness is surface-aware.
 2. Gate the new behavior behind the harness control point (`fw.controlPoints.getBooleanValue(<key>, false, ctx)`) and add
    `// @fireweave-controlpoint <key>` at each evaluation site **as you write it**.
+   On a start-profile surface `fw` comes from the SDK's start module, never a harness: add
+   `'<key>'` with local value `true` to that surface's control-points file to try it locally.
+   - ts-server: `await fw.controlPoints.getBooleanValue('<key>', false, { targetingKey: user.id })` (`@fireweaveai/server-sdk/start`); `src/fireweave/control-points.ts`
+   - web: `fw.controlPoints.getBooleanValue('<key>', false)` (`@fireweaveai/web-sdk/start`, no per-call context); `src/fireweave/control-points.ts`
+   - Python: `fw.control_points.get_boolean_value('<key>', False, EvaluationContext(user_id))`; `fireweave_setup/control_points.py`
+   - Go: `fw.ControlPoints().GetBooleanValue("<key>", false, fw.For(user.ID))`; `internal/fireweave/control_points.go`
+   - Java: `Fw.controlPoints().getBooleanValue("<key>", false, ctx)`; `FireweaveControlPoints.java`
+   - Rust: `fireweave::start::control_points().get_boolean_value("<key>", false, Some(&ctx))`; `src/fireweave_control_points.rs`
+   - Dart: `fw.controlPoints.getBooleanValue('<key>', false)`; `lib/fireweave/control_points.dart`
+   - Swift: `fw.controlPoints.getBooleanValue("<key>", default: false)`; `FireweaveLocalControlPoints.swift`
+
+   Config options and overrides: `.fireweave/agent-instructions.md` → FireWeave SDK: configuration and overrides (<language>).
+
 3. **BEFORE calling the task done** — run `rollout-server_assert_dev_checklist`
    `{ feature }` (PARK on any block) + `detect_rollout_ready` + `reconcile` phase `build`.
 4. Do **not** open a PR / declare done until `assert_dev_checklist.pass === true`.
@@ -1337,13 +2236,110 @@ Customer repos: leave `sourceRoots` empty (scan whole repo) unless the app layou
 
 **What — surface → packages:**
 
-| Surface     | Packages                                                                                               | Why both                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `ts-server` | `@fireweaveai/server-sdk`                                                                              | the whole surface — control points, target registration, and both modes the scaffolded providers bring up                         |
-| `web`       | `@fireweaveai/web-sdk`                                                                                 | the whole surface — browser control points; credential resolution is inlined into the scaffolded `fw-providers.ts`                |
-| `python`    | `fireweave`                                                                                            | the whole surface — control points, runtime, target registration                                                                  |
-| `java`      | `ai.fireweave:fireweave-sdk` (Maven Central; resolve the current release — see the java install table) | the whole surface — control points, runtime, target registration                                                                  |
-| `swift`     | `Fireweave` (SwiftPM, git URL + tag from the SDK repo)                                                 | control points in local and remote mode; credentials are build-baked via Info.plist, never env-read — see **Swift surface** below |
+| Surface     | Packages                                                                                            | Why both                                                                                                                          |
+| ----------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `ts-server` | `@fireweaveai/server-sdk`                                                                           | the whole surface — control points, target registration, and both modes the scaffolded providers bring up                         |
+| `web`       | `@fireweaveai/web-sdk`                                                                              | the whole surface — browser control points; credential resolution is inlined into the scaffolded `fw-providers.ts`                |
+| `python`    | `fireweave`                                                                                         | the whole surface — control points, runtime, target registration                                                                  |
+| `java`      | `ai.fireweave:fireweave-sdk` (Maven Central; a range within the major — see the java install table) | the whole surface — control points, runtime, target registration                                                                  |
+| `swift`     | `Fireweave` (SwiftPM, git URL + tag from the SDK repo)                                              | control points in local and remote mode; credentials are build-baked via Info.plist, never env-read — see **Swift surface** below |
+
+**A package surface installs at the 3.0.0 floor, through the tool.** The same names
+for ts-server, web, Python and Java, plus Go
+`github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3`, Rust `fireweave` (crates.io; on
+staging a git dependency on the `rust/v3.0.0-rc.N` tag), Dart `fireweave` (pub:
+`flutter pub add` / `dart pub add`) and Swift's `FireweaveStart` product from the
+mirror `https://github.com/FireWeave-HQ/fireweave-swift` — warn the user that the
+mirror must be provisioned before a Swift install can resolve, and that no Swift rc
+build is published until it is, so a staging Swift surface has nothing to install.
+The flow, exactly:
+
+1. Call `rollout-server_resolve_sdk_install` with
+   `{ cwd, surface, harnessKind: 'package', startProfile? }` (`startProfile` for `dart` /
+   `swift`). It applies the floor — prerelease-aware: on staging `3.0.0-rc.N` and
+   Python `3.0.0rcN` pass, while the pre-rename `-staging.` builds and Python `a`
+   builds are refused; 2.x fails — and preflights the start entry. `{ ok: false }` →
+   show its `reason` and stop, as for a scaffold surface.
+2. `needsVersion: true` (only Go, Rust, Dart and Swift on staging, whose manifests
+   record an exact version — limit 1 below) → run the `preflight[]` entry with check
+   `registry-version` (status `instruction`, its `command`), take the highest `-rc.`
+   version it lists (never the highest pre-release) and call again with that
+   `version`.
+3. Run the result's `command` through `rollout-server_run_bounded_install`, or
+   apply its `snippets[]` (`{ file, content, note? }`) where the install is a build-file
+   edit; then run the remaining `preflight[]` entries whose status is `instruction`.
+4. Record its `sdk` (`{ name, version?, channel: 'stable' | 'staging' }`) into
+   `surfaces[].sdk`, and show its `summary`: the channel **is** the endpoint the app
+   will call, and `endpoint` names that host.
+
+Without `harnessKind` the tool answers for a scaffold surface, unchanged.
+
+**SDK installs never pin an exact version.** On every channel (stable, staging and
+dev) an SDK install takes the channel's latest build, and the manifest records a
+range that floats minor and patch within major 3, from the 3.0.0 floor (staging from
+`3.0.0-rc.1`). The tool's commands and snippets already follow this table; never add
+an exact-save flag, an `==` requirement or a plain version to them:
+
+| Ecosystem                        | Stable                                                 | Staging                                                                                            | Dev store   | The manifest records                                  |
+| -------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------- |
+| npm, bun, pnpm, yarn, deno       | `<pkg>@latest` (refused while `latest` is below 3.0.0) | `<pkg>@next`                                                                                       | `<pkg>@dev` | `^3.x.y` / `^3.0.0-rc.N` / `^3.0.0-dev.<stamp>.<sha>` |
+| Python (uv, poetry, pipenv, pip) | `'fireweave>=3,<4'`                                    | `'fireweave>=3.0.0rc1,<4'` (poetry adds `--allow-prereleases`)                                     | —           | the specifier as written                              |
+| Java (Maven, Gradle)             | `[3.0.0,4.0.0)`                                        | `[3.0.0-rc.1,4.0.0)`                                                                               | —           | the range as written                                  |
+| Rust                             | `cargo add 'fireweave@3'`                              | the highest `rust/v3.0.0-rc.N` git tag                                                             | —           | `fireweave = "3"` / that tag, exactly (limit 1)       |
+| Dart                             | `^3.0.0`                                               | the highest `dart/v3.0.0-rc.N` git tag                                                             | —           | `^3.0.0` / that tag, exactly (limit 1)                |
+| Go                               | `go get <module>/v3@latest`                            | the highest `v3.0.0-rc.N` (never the highest pre-release: `v3.0.0-staging.1` sorts above every rc) | —           | an exact version in `go.mod`, by design (limit 1)     |
+| Swift                            | `from: "3.0.0"` (SwiftPM's up-to-next-major range)     | none until the Swift mirror exists                                                                 | —           | `from: "3.0.0"`                                       |
+
+Name the limits that apply in the install summary:
+
+1. **`go.mod` records an exact version, by design.** Go's minimal version selection
+   writes the version `go get` resolved; there is no range to write. crates.io and
+   pub.dev carry no staging build, so Rust and Dart staging depend on an rc git tag,
+   recorded exactly the same way. Re-running the channel's install is how such a
+   surface moves.
+2. **A staging range also admits the stable release.** No ecosystem has a
+   staging-only range: `^3.0.0-rc.N`, `>=3.0.0rc1,<4` and `[3.0.0-rc.1,4.0.0)` all
+   include 3.0.0 once it ships, and 3.0.0 calls `app-server.fireweave.ai`. npm's
+   `^3.0.0-rc.N` also matches the deprecated `3.0.0-staging.1`, which SemVer orders
+   above every rc. **Re-running the channel install is how a project stays on
+   staging**: npm's `next` tag always points at the newest rc; a Python or Java range
+   takes the highest version, so it stays on staging only while an rc is the highest
+   3.x. No FireWeave check flags a staging surface whose installed version is a plain
+   release.
+3. **The stable Java range admits a later rc.** Maven and Gradle ranges include
+   qualifier versions: once a `3.1.0-rc.1` (or a `4.0.0-rc.1`, which Maven orders
+   below `4.0.0`) is on Central, `[3.0.0,4.0.0)` can resolve it, and an rc calls
+   `staging-app-server.fireweave.ai`. npm `^3.x.y`, Python `>=3,<4` and Cargo `"3"`
+   skip pre-releases; pub prefers a stable version.
+
+**Dev: install the SDK from the FireWeave dev artifact store.** This applies
+**only when `FW_DEV_ARTIFACTS_URL` is set in the environment** (FireWeave's dev
+stack sets it; a customer's machine or sandbox never has it) **and the surface
+is `ts-server` or `web`** (the store holds the two npm SDKs, nothing else). It
+replaces steps 1 and 2 above; every other surface, and every run without the
+variable, follows the flow above unchanged.
+
+1. Read the newest dev build: `curl -fsS "$FW_DEV_ARTIFACTS_URL/@fireweaveai%2fserver-sdk"`
+   (or `%2fweb-sdk`) and take `dist-tags.dev`. When the store does not answer, or
+   has no such package, say so in the session summary and follow the normal flow
+   instead; never stop over it.
+2. Point **only the `@fireweaveai` scope** at the store, in the user-level
+   `~/.npmrc`: `@fireweaveai:registry=$FW_DEV_ARTIFACTS_URL/`. Never in the
+   repository: no project `.npmrc`, no `bunfig.toml`, no manifest field. bun,
+   npm and pnpm read it; for yarn 2+ or Deno, follow the normal flow.
+3. Install by the store's `dev` tag through `rollout-server_run_bounded_install`
+   (`bun add @fireweaveai/server-sdk@dev`, or the repo's manager per the table
+   below), never an exact version or an exact-save flag. The `dev` tag selects the
+   prerelease build; the manifest records `^3.0.0-dev.<stamp>.<sha>`.
+4. Record `surfaces[].sdk` as `{ name, version: <version>, channel: 'dev' }`, with
+   the version step 1 read.
+5. The lockfile now names the store's URL, and the Step 9 smoke's
+   `sdk-channel` check FAILS on the `dev` pin: both are correct, because this
+   repository does not yet build against a published SDK. Do not fix either.
+   Name them in the session summary instead (in cloud setup, one `other`
+   to-do: "Built against a FireWeave dev SDK build (`<name>@<version>`):
+   reinstall it from the registry and drop the dev pin before this deploys").
+   Fix every other failing check as usual.
 
 **The node package was RENAMED, and the rename is a safety feature.** `@fireweaveai/sdk` is still live on npm carrying the pre-v1 OpenFeature surface. v1 ships under the new name `@fireweaveai/server-sdk`, so a repo pinned to the old name can never silently receive the breaking surface. Never install `@fireweaveai/sdk` for a v1 harness.
 
@@ -1361,29 +2357,36 @@ Customer repos: leave `sourceRoots` empty (scan whole repo) unless the app layou
 
 A **python** surface uses its own managers — same detection discipline, different table:
 
-| Detected          | Install command                                                                                                                                                                            |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `uv.lock`         | `uv add fireweave`                                                                                                                                                                         |
-| `poetry.lock`     | `poetry add fireweave`                                                                                                                                                                     |
-| `Pipfile.lock`    | `pipenv install fireweave`                                                                                                                                                                 |
-| none of the above | `pip install fireweave` **and** record it in `pyproject.toml` / `requirements.txt` — a bare `pip install` leaves nothing in the repo, so the next checkout has no record of the dependency |
+| Detected          | Install command                                                                                                                                                                                    |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `uv.lock`         | `uv add 'fireweave>=3,<4'`                                                                                                                                                                         |
+| `poetry.lock`     | `poetry add 'fireweave>=3,<4'`                                                                                                                                                                     |
+| `Pipfile.lock`    | `pipenv install 'fireweave>=3,<4'`                                                                                                                                                                 |
+| none of the above | `pip install 'fireweave>=3,<4'` **and** record it in `pyproject.toml` / `requirements.txt` — a bare `pip install` leaves nothing in the repo, so the next checkout has no record of the dependency |
+
+That is the stable range; staging is `'fireweave>=3.0.0rc1,<4'` (poetry adds `--allow-prereleases`), per **SDK installs never pin an exact version**. Never `==`.
 
 A **java** surface has no "install" verb at all — every path is a build-file
 edit, which the repo records by construction:
 
 | Detected                              | Add                                                                                      |
 | ------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `pom.xml`                             | ONE `<dependency>` block — `ai.fireweave:fireweave-sdk:<release>`                        |
-| `build.gradle` / `build.gradle.kts`   | `implementation("ai.fireweave:fireweave-sdk:<release>")` — `mavenCentral()` is enough    |
+| `pom.xml`                             | ONE `<dependency>` block — `ai.fireweave:fireweave-sdk:<range>`                          |
+| `build.gradle` / `build.gradle.kts`   | `implementation("ai.fireweave:fireweave-sdk:<range>")` — `mavenCentral()` is enough      |
 | `gradle/libs.versions.toml` (catalog) | a `fireweave` version entry + the one library coordinate, referenced from the build file |
 
-**The `ai.fireweave` artifacts resolve from Maven Central.** **`<release>` is
-resolved at init time, never copied from this document:** Maven has no
-dist-tags, so read the current release from Central's metadata —
+**The `ai.fireweave` artifacts resolve from Maven Central.** **`<range>` is a
+range within the major, never a plain version and never copied from this
+document:** a package surface takes the tool's snippet (`[3.0.0,4.0.0)` on stable,
+`[3.0.0-rc.1,4.0.0)` on staging — see **SDK installs never pin an exact
+version**). For a scaffold surface, Maven has no dist-tags, so read the major's
+newest release from Central's metadata —
 `https://repo1.maven.org/maven2/ai/fireweave/fireweave-sdk/maven-metadata.xml`,
-the `<release>` element — and pin that literal in the build file. A version
-baked into this doc would freeze every scaffolded repo at whatever was current
-the day it was written — the same trap the npm channel paragraph below records.
+the highest plain version (no `-` suffix) in `<versions>`; not `<release>` or
+`<latest>`, which an rc can occupy — and write `[X.Y.Z,<X+1>.0.0)` in the build
+file. A version baked into this doc would freeze every scaffolded repo at
+whatever was current the day it was written — the same trap the npm channel
+paragraph below records.
 
 **Two `ai.fireweave` artifacts are PERMANENTLY ORPHANED — never scaffold them.**
 `fireweave-openfeature` and `fireweave-adapter-posthog` were published to Maven
@@ -1395,7 +2398,7 @@ that lists either one compiles against the retired pre-v1 surface. Only
 
 Bun is the default when nothing is detected and the repo is otherwise Node-shaped. **Two or more lockfiles, or none in a repo with no clear shape → `the `question` tool`** rather than guessing; installing with the wrong manager writes a second lockfile, which is a mess the user then has to unpick. Every clarification in this skill goes through `the `question` tool` — this is not an exception.
 
-**Never write a version range into these commands.** npm's dist-tags are the source of truth for what "current" means, and a literal pinned here freezes every repo the skill scaffolds at whatever line was current the day the sentence was written — a `0.x` caret caps at the next minor, so those repos stop receiving SDK fixes silently and look deliberately pinned. The FIR-359 harness report carries the installed `@fireweaveai/server-sdk` version.
+**Never write a version from this document into these commands.** They install by the channel's tag (Python and Java: the range in **SDK installs never pin an exact version**). npm's dist-tags are the source of truth for what "current" means, and a literal pinned here freezes every repo the skill scaffolds at whatever line was current the day the sentence was written — a `0.x` caret caps at the next minor, so those repos stop receiving SDK fixes silently and look deliberately pinned. The FIR-359 harness report carries the installed `@fireweaveai/server-sdk` version.
 
 **The channel is DERIVED, never asked.** Call
 `rollout-server_resolve_sdk_install` with `{ cwd, surface }` before
@@ -1436,16 +2439,16 @@ silence you cannot distinguish from slowness.
 into `project.json` `surfaces[].sdk` as `{ name, version?, channel }` — take
 `resolvedVersion` from the tool's result rather than re-reading the registry:
 
-| `channel` | Resolves from                         | Use                                                                 |
-| --------- | ------------------------------------- | ------------------------------------------------------------------- |
-| `stable`  | the registry's default tag (`latest`) | every normal repo — install BARE, no version range (npm: see below) |
-| `staging` | the `next` dist-tag                   | dogfooding the next SDK line before it promotes                     |
-| `dev`     | a LOCAL path (`workspace:*`)          | SDK co-development only, behind `sdkDev` / `FIREWEAVE_SDK_DEV=1`    |
+| `channel` | Resolves from                                           | Use                                                                                                                                                              |
+| --------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stable`  | the registry's default tag (`latest`)                   | every normal repo — install by the tag (`@latest`; bare in the scaffold flow), never a literal version (npm: see below)                                          |
+| `staging` | the `next` dist-tag                                     | dogfooding the next SDK line before it promotes                                                                                                                  |
+| `dev`     | a LOCAL path (`workspace:*`), or the dev artifact store | SDK co-development only, behind `sdkDev` / `FIREWEAVE_SDK_DEV=1`; or `FW_DEV_ARTIFACTS_URL` (see **Dev: install the SDK from the FireWeave dev artifact store**) |
 
-**The npm dist-tag is `next`. The prerelease identifier is `-staging.N`. The
+**The npm dist-tag is `next`. The prerelease identifier is `-rc.N`. The
 channel this skill records is `staging`. Three spellings, one line — do not
 assume any of them from another.** A staging release is
-`<major>.<minor>.<patch>-staging.<N>` — e.g. `2.3.0-staging.1` — published under
+`<major>.<minor>.<patch>-rc.<N>` — e.g. `3.0.0-rc.1` — published under
 the npm dist-tag **`next`**. Install it by TAG, never by version:
 
 ```
@@ -1463,14 +2466,20 @@ untagged publishes to `latest` even for prereleases, so `--tag next` exists as
 
 Installing by tag matters because the alternative is pinning a literal staging
 version, and that is the same freeze trap as pinning a stable one — a repo
-dogfooding `2.3.0-staging.1` stops receiving `-staging.2` and looks deliberately
-pinned. The tag moves; the version recorded in `surfaces[].sdk` says what it
-resolved to on the day.
+dogfooding `3.0.0-rc.1` stops receiving `-rc.2` and looks deliberately
+pinned. The tag moves; the manifest records `^<resolved>` (`^3.0.0-rc.N`), a
+range with limit 2 of **SDK installs never pin an exact version**; the version
+recorded in `surfaces[].sdk` says what it resolved to on the day.
 
-`-staging.N` is a semver PRERELEASE, so it sorts BELOW `2.3.0` and can never be
-mistaken for the release it precedes. That is also why `channelForVersion`
-routes any prerelease to the staging channel without needing to recognise the
-word.
+`-rc.N` is a semver PRERELEASE, so it sorts BELOW `3.0.0` and can never be
+mistaken for the release it precedes. The channel is read from the version by
+one rule in every SDK (fireweave-sdk spec SP-13): a version containing `-rc.` is
+a staging build and calls `staging-app-server.fireweave.ai`; any other SemVer
+version, other pre-releases included (`-beta.N`, a dev-store `-dev.` build), is
+production. Python follows PEP 440: any pre-release or dev release is staging, and
+FireWeave publishes only `rcN` ones. Builds published before the rename keep the
+rule they shipped with, which is why `resolve_sdk_install` refuses a `-staging.`
+version outright instead of reading it.
 
 **npm `stable` is currently UNREACHABLE, and that is a pipeline state, not a
 stale registry.** `publish-npm-production` in the SDK's release workflow is
@@ -1485,30 +2494,20 @@ plainly when it does not. Reachability is per-registry: PyPI, Maven Central and
 the git-tag ecosystems (go, swift) each have a live production line; npm does
 not yet.
 
-**Python is the exception, and it is a hard one.** PyPI has no dist-tags, so
-there is nothing to name — the staging channel is a DIFFERENT INDEX. A staging
-`fireweave` is published to **TestPyPI**
-(`repository-url: https://test.pypi.org/legacy/`, job `publish-pypi`), and
-production goes to PyPI (`publish-pypi-production`, which — unlike npm — is
-enabled). So `pip install --pre fireweave` searches PyPI and will not find a
-staging release, no matter how the version is spelled:
+**Python has no dist-tags, so the channel is the specifier.** Staging and
+production both publish to **PyPI**: a staging build is `X.Y.ZrcN` (PEP 440's
+spelling of `-rc.N`), a release is plain. pip, uv, poetry and pipenv skip
+pre-releases unless the requirement names one, so the range decides the channel:
 
 ```
-pip install --pre --index-url https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple fireweave
+pip install 'fireweave>=3,<4'            # stable: the newest 3.x release, never an rc
+pip install 'fireweave>=3.0.0rc1,<4'     # staging: the pre-release in the specifier admits rc builds
 ```
 
-The `--extra-index-url` is not optional: TestPyPI does not mirror the
-dependency graph, so resolution fails without a fallback to real PyPI.
-
-**The staging VERSION spelling is unresolved upstream — read it, do not assume
-it.** PEP 440 admits only `a` / `b` / `rc` prerelease segments plus `.devN`, so
-`2.3.0-staging.1` is not a valid PyPI version; but the SDK's `version.sh apply`
-writes the computed `X.Y.Z-staging.N` verbatim into `sdks/python/pyproject.toml`
-with no PEP 440 translation. Resolve what actually got published by listing the
-project on TestPyPI rather than predicting it here. Record the channel as
-`staging` either way — the channel is FireWeave's vocabulary, not the
-registry's.
+Never `==` and never a plain version. On staging, poetry also needs
+`--allow-prereleases` (the tool's command carries it), and uv prefers a final
+release whenever one satisfies the range. Record the channel as `staging` either
+way — the channel is FireWeave's vocabulary, not the registry's.
 
 `version` is written AFTER install, recording what actually resolved — never
 prescribed before it. A literal range written here freezes every scaffolded repo
@@ -1526,7 +2525,53 @@ unreadable pin can never masquerade as a verified one.
 
 ### The SDK contract — where providers come from
 
-The standalone SDKs (https://github.com/FireWeave-HQ/fireweave-sdk) are REQUIRED by the scaffolded harness, not optional extras. **Every surface binds BOTH its prod and its dev provider from its OWN standalone SDK** — there is no second package in the harness graph.
+Every SDK (https://github.com/FireWeave-HQ/fireweave-sdk) has **two tiers over one
+core**, and which one a surface uses is its harness kind. They obey opposite rules on
+purpose — do not carry a rule from one tier to the other.
+
+#### Tier 1 — the START PROFILE (default for every NEW surface, `harnessKind: 'package'`)
+
+| Surface     | Package                                     | Start entry                                         | Start call                                                                           |
+| ----------- | ------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `ts-server` | `@fireweaveai/server-sdk` ≥ 3.0.0           | `@fireweaveai/server-sdk/start` (or `/register`)    | `start({ controlPoints })`                                                           |
+| `web`       | `@fireweaveai/web-sdk` ≥ 3.0.0              | `@fireweaveai/web-sdk/start` + `/vite` or `/define` | `ready = start({ controlPoints })`                                                   |
+| `python`    | `fireweave` ≥ 3.0.0                         | `fireweave.start`                                   | `start(control_points=control_points)`                                               |
+| `go`        | `.../sdks/go/v3` ≥ v3.0.0                   | `.../sdks/go/v3/fw`                                 | `fw.Start(fw.Options{ControlPoints: …})` / `fw.MustStart`                            |
+| `java`      | `ai.fireweave:fireweave-sdk` ≥ 3.0.0        | `ai.fireweave.sdk.start.Fw`                         | `Fw.start(StartOptions.builder().controlPoints(…).build())`                          |
+| `rust`      | `fireweave` crate ≥ 3.0.0                   | `fireweave::start`                                  | `fireweave::start::start(StartOptions { control_points: …, ..Default::default() })?` |
+| `dart`      | `fireweave` (pub) ≥ 3.0.0                   | `package:fireweave/client.dart` or `server.dart`    | `await Fireweave.start(controlPoints: …)`                                            |
+| `swift`     | `FireweaveStart` product, mirror repository | `import FireweaveStart`                             | `startFireweave(controlPoints: …)`                                                   |
+
+- **The mode is INFERRED, by one rule in every SDK:** an explicit `mode` option wins;
+  otherwise a key means **remote**; no key and an environment name of `development`,
+  `dev`, `local` or `test` means **local**, serving the values in the surface's
+  **control-points file** (`defineControlPoints` / `define_control_points` /
+  `fw.DefineControlPoints`); anything else **fails closed**, naming the key variable —
+  a server's start throws (or returns the error), a web build fails, and a Dart client
+  or Swift app marks itself failed and serves defaults without throwing. A deploy that
+  lost its key never becomes local evaluation.
+- **It reads `FIREWEAVE_*`.** Server profiles read `FIREWEAVE_KEY` (project key,
+  `project-api-key_…`), `FIREWEAVE_URL`, `FIREWEAVE_ENV` then `APP_ENV` (ts-server also
+  `NODE_ENV`) and `FIREWEAVE_INSTANCE_ID` from the process. Client profiles take
+  `FIREWEAVE_BROWSER_KEY` (browser key, `fw_public_…`), `FIREWEAVE_URL` and
+  `FIREWEAVE_ENV` as **build** values (the web build helper, Dart defines, Swift
+  Info.plist). The legacy `FW_PROJECT_API_KEY` / `FW_API_URL` / `FW_ATTEST_URL` are
+  still read with one warning; initialise never writes them for a package surface.
+- **The endpoint is the SDK channel**: a `-rc.N` (Python `rcN`) build calls
+  `staging-app-server.fireweave.ai`, any other `app-server.fireweave.ai`;
+  `FIREWEAVE_URL` is only for a self-hosted or bench fw-server.
+- **The wrong key family is refused at start** — a browser key in a server, a project
+  key in a client — naming where it came from, never the value.
+- **One start per process, nothing beside it**: no hand-rolled `initFireweave`, no
+  second start, no harness module. Every option and override per language is in the
+  **Agent instructions — SDK configuration sections**.
+
+#### Tier 2 — the CORE `initFireweave` (scaffold surfaces, and advanced use)
+
+The core is what a scaffold surface's generated harness calls, and what an app may
+call directly for wiring the start profile does not cover (a per-user server client,
+a custom adapter). Initialise never writes it for a new surface. The standalone SDKs
+are REQUIRED by the scaffolded harness, not optional extras. **Every surface binds BOTH its prod and its dev provider from its OWN standalone SDK** — there is no second package in the harness graph.
 
 | Surface     | Package                      | Entry point      | Prod tier        | Dev tier        |
 | ----------- | ---------------------------- | ---------------- | ---------------- | --------------- |
@@ -1536,11 +2581,11 @@ The standalone SDKs (https://github.com/FireWeave-HQ/fireweave-sdk) are REQUIRED
 | `java`      | `ai.fireweave:fireweave-sdk` | `Fireweave.init` | `Mode.REMOTE`    | `Mode.LOCAL`    |
 | `swift`     | `Fireweave` (SwiftPM)        | `initFireweave`  | `.remote(…)`     | `.local(…)`     |
 
-**One entry point, two modes — not two constructions.** `mode` is REQUIRED and never inferred: with inference, a missing or mistyped credential in production silently becomes local evaluation, every control point serves its default, and the boot log stays green. The observable symptom is a feature that never ramps, which is indistinguishable from a rollout nobody started. Because both tiers are the same call differing by one option, they cannot skew in validation, lifecycle gating or context canonicalization.
+**One entry point, two modes — not two constructions.** In the core, `mode` is REQUIRED and never inferred: with inference, a missing or mistyped credential in production silently becomes local evaluation, every control point serves its default, and the boot log stays green. The observable symptom is a feature that never ramps, which is indistinguishable from a rollout nobody started. Because both tiers are the same call differing by one option, they cannot skew in validation, lifecycle gating or context canonicalization.
 
 **Never hand-construct the runtime/adapter/client** to "simplify" a template. It compiles and runs, and it bypasses the initialisation validation that makes a bad credential fail loudly at boot.
 
-**The SDK reads NO environment variables** — every credential is an explicit option. The HARNESS reads `FW_API_URL` / `FW_PROJECT_API_KEY` (`PUBLIC_FW_*` on web) and passes them in. It also passes `allowedHosts` derived from the configured URL: without it the SDK validates against a canonical `*.fireweave.ai`-plus-loopback allowlist, so a **self-hosted fw-server fails initialisation with a bare `Configuration` error that names nothing**.
+**The core SDK reads NO environment variables** — every credential is an explicit option. The HARNESS reads `FW_API_URL` / `FW_PROJECT_API_KEY` (`PUBLIC_FW_*` on web) and passes them in. It also passes `allowedHosts` derived from the configured URL: without it the SDK validates against a canonical `*.fireweave.ai`-plus-loopback allowlist, so a **self-hosted fw-server fails initialisation with a bare `Configuration` error that names nothing**.
 
 **Why this needs a guard and not just this paragraph:** a template that binds a
 provider from anywhere other than its own standalone SDK still compiles, runs,
@@ -1603,12 +2648,12 @@ vanished.
 The rest of the scan is unchanged:
 
 - Read scan scope — `sourceRoots` + `scanExclude` — from the record that owns it: the cached `repo_state` row (`.fireweave/.cache/repo-state.json`), and nowhere else. The committed pointer is not a second home for these two; a worktree with no projection falls through to generic test-pattern defaults and scans the whole repo, which is wide rather than wrong. Run `fw sync`.
-- Collect manifest flag keys from the source chosen above (parse `flags[].key`; an invalid manifest is a **block** finding, never a skip). Skip rows the branch's own draft `_shadowed`, and rows whose status is `archived` / `retiring` — their flags no longer demand an anchor.
+- Collect manifest control-point keys from the source chosen above (parse `controlPoints[].key` — `flags[].key` in schemas 1–2; an invalid manifest is a **block** finding, never a skip). Skip rows the branch's own draft `_shadowed`, and rows whose status is `archived` / `retiring` — their control points no longer demand an anchor.
 - Walk the repo for anchors under `sourceRoots`, honouring `scanExclude` — same rules as `detect_rollout_ready` / `reconcile`.
 - Match `@fireweave-controlpoint <key>` in any comment leader (line, block, hash) — same regex as the rollout-server scanner.
 - **block** if an anchor key has no manifest entry.
-- **block** if a manifest flag has no anchor.
-- **block** (`ramp1-default`) if a manifest flag's declared `default` is `true`, or a non-zero number — RAMP-1: the ramp turns a feature on, the default never does. A recorded `ramp1Exception` (legal only alongside `default: true`) downgrades it to **warn**. `false`, `0`, a string variant key, and no declared default at all all pass. This duplicates `assert_dev_checklist` check 3b deliberately: that tool is one an agent chooses to call, while this gate is what both stop hooks actually run — before it, a `default: true` shipped past a green stop hook on every host. The EVAL-SITE half of RAMP-1 stays in `assert_dev_checklist` alone; resolving the second argument of `fw.controlPoints.getBooleanValue(key, default)` needs the TypeScript compiler API, which this standalone `.mjs` cannot import.
+- **block** if a manifest control point has no anchor.
+- **block** (`ramp1-default`) if a manifest control point's declared `default` is `true`, or a non-zero number — RAMP-1: the ramp turns a feature on, the default never does. A recorded `ramp1Exception` (legal only alongside `default: true`) downgrades it to **warn**. `false`, `0`, a string variant key, and no declared default at all all pass. This duplicates `assert_dev_checklist` check 3b deliberately: that tool is one an agent chooses to call, while this gate is what both stop hooks actually run — before it, a `default: true` shipped past a green stop hook on every host. The EVAL-SITE half of RAMP-1 stays in `assert_dev_checklist` alone; resolving the second argument of `fw.controlPoints.getBooleanValue(key, default)` needs the TypeScript compiler API, which this standalone `.mjs` cannot import.
 - Print `{ pass, findings[] }` on stdout and exit `0` when `pass: true`, else `1`. `pass` is false iff some finding has `severity: "block"`; `warn` / `info` findings carry the staleness and the manifest source without failing the build.
 
 Write `.fireweave/hooks/rollout-build-gate.sh`. The wrapper's job is only to decide
@@ -1772,7 +2817,7 @@ if [[ ! -t 0 ]]; then
   fi
 fi
 [[ -z "$prompt" ]] && prompt="${1:-${CLAUDE_USER_PROMPT:-}}"
-msg="FireWeave rollout-ready repo (promote-not-wrap). FIRST classify this task in one line — change | inquiry | brainstorm | infra-only — because this reminder fired on a KEYWORD match and the keyword cannot tell 'fix the checkout bug' from 'how do I fix this typo'. Only 'change' runs the package; when genuinely unclear treat it as change (skipping wrongly ships unflagged behaviour, running wrongly costs a few tool calls). For a change task the rollout-ready package comes FIRST — author the manifest via upsert_rollout_manifest (FireWeave stores it; do not write a manifest file yourself) + mint chg_/stmp_ + append each stamp to its own surface's FW_STAMPS (one shared stamp only when single-project + every surface's harness is surface-aware), add // @fireweave-controlpoint <key> as you code, then assert_dev_checklist + reconcile(build) before done. No backfill. Absence has names: only never-authored means author one; not-fetched=fw sync, not-authorized=withheld not absent, queued=drain .fireweave/.queue. Ship via /fireweave:safe-rollout. See .fireweave/agent-instructions.md."
+msg="FireWeave rollout-ready repo (promote-not-wrap). FIRST classify this task in one line — change | inquiry | brainstorm | infra-only — because this reminder fired on a KEYWORD match and the keyword cannot tell 'fix the checkout bug' from 'how do I fix this typo'. Only 'change' runs the package; when genuinely unclear treat it as change (skipping wrongly ships unflagged behaviour, running wrongly costs a few tool calls). For a change task the rollout-ready package comes FIRST — author the manifest via upsert_rollout_manifest (FireWeave stores it; do not write a manifest file yourself) + mint chg_/stmp_ + append each stamp to its own surface's FW_STAMPS (on a start-profile surface: in .fireweave/stamps.ts, .py or .json; one shared stamp only when single-project + every surface's harness is surface-aware), seed new control points in the surface's control-points file on a start-profile surface (config options and overrides per language: .fireweave/agent-instructions.md, FireWeave SDK: configuration and overrides), add // @fireweave-controlpoint <key> as you code, then assert_dev_checklist + reconcile(build) before done. No backfill. Absence has names: only never-authored means author one; not-fetched=fw sync, not-authorized=withheld not absent, queued=drain .fireweave/.queue. Ship via /fireweave:safe-rollout. See .fireweave/agent-instructions.md."
 if [[ -n "$prompt" ]] && ! echo "$prompt" | grep -qiE '\b(add|implement|feature|feat|fix|ship|build|wrap|change|refactor|rollout|flag)\b'; then exit 0; fi
 node -e "console.log(JSON.stringify({hookSpecificOutput:{hookEventName:process.argv[2]||'UserPromptSubmit',additionalContext:process.argv[1]}}))" "$msg" "${HOOK_EVENT:-}" 2>/dev/null || printf '%s\n' "$msg"
 exit 0
@@ -1871,9 +2916,11 @@ Record `CLAUDE.md`, `.claude/hooks/rollout-intent-gate.sh`, `.claude/hooks/rollo
     { "name": "list_registered_tools", "server": "rollout-server" },
     { "name": "guarded_call", "server": "rollout-server" },
     { "name": "record_rollout_env_contract", "server": "rollout-server" },
+    { "name": "issue_browser_key", "server": "rollout-server" },
     { "name": "resolve_sdk_install", "server": "rollout-server" },
     { "name": "run_bounded_install", "server": "rollout-server" },
     { "name": "refresh_agent_skills", "server": "rollout-server" },
+    { "name": "apply_setup_artifacts", "server": "rollout-server" },
     { "name": "detect_surfaces", "server": "rollout-server" },
     { "name": "detect_rollout_ready", "server": "rollout-server" },
     { "name": "reconcile", "server": "rollout-server" },

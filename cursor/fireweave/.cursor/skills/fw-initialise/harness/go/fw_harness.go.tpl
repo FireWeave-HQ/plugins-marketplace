@@ -19,13 +19,24 @@
 // alias to learn, and no codemod to translate it back out (ADR-022). They never
 // panic: every failure resolves to the default you passed, with the reason
 // recorded on the Decision (spec/control-points.md "Return discipline"). Swap
-// GetBooleanValue for GetBooleanDetails — same arguments — to see the reason:
+// GetBooleanValue for GetBooleanDetails — same arguments — to see the reason.
+// This package and the SDK's are both named `fireweave`, so a call site that
+// needs both aliases the SDK import:
 //
+//	import (
+//	    fwsdk "github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3/fireweave"
+//	    "<your module>/fireweave"
+//	)
+//
+//	ec := fwsdk.NewEvaluationContext(userID, nil)
 //	// @fireweave-controlpoint <feature-slug>
-//	if GetFwClient().ControlPoints().GetBooleanValue(
-//	    "<feature-slug>", false, fireweave.NewEvaluationContext(userID, nil)) {
+//	if fireweave.GetFwClient().ControlPoints().GetBooleanValue("<feature-slug>", false, &ec) {
 //	    ...
 //	}
+//
+// The context is passed by POINTER: NewEvaluationContext returns a value and
+// GetBooleanValue takes *EvaluationContext, so passing the call inline does
+// not compile.
 //
 // defaultValue MUST be false at every call site (RAMP-1): the ramp turns a
 // feature on, the default never does. To dogfood ON locally, seed the key in

@@ -18,7 +18,8 @@
     "build": "bun build src/server.ts --outdir dist --target bun",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "lint:exports": "bash scripts/lint-exports.sh"
+    "lint:exports": "bash scripts/lint-exports.sh",
+    "gen:setup-templates": "bun scripts/gen-setup-templates.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

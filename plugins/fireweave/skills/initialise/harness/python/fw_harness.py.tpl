@@ -11,6 +11,11 @@ ENVIRONMENT — resolved by NAME in ``fw_providers.py``, not a bare boolean —
 selects which one is live. Nothing is swapped at promotion; ``safe-rollout``
 ramps via ``flag.control`` and never mutates this file.
 
+This file lives in the ``fireweave_harness/`` package, NEVER ``fireweave/``. A
+local ``fireweave`` package shadows the ``fireweave`` SDK from PyPI in a flat
+layout: ``from fireweave import init_fireweave`` in ``fw_providers.py`` would
+then import this package instead of the SDK and fail at boot.
+
 ``init_fw_harness()`` MUST be called FIRST in the app entrypoint, before any
 read. ``verify_prod_path`` asserts that, and asserts the tier decision below
 stays visible HERE rather than disappearing into a helper.
@@ -20,6 +25,9 @@ to learn, and no codemod to translate it back out (ADR-022). They never raise:
 every failure resolves to the default you passed, with the reason recorded on
 the ``Decision`` (spec/control-points.md "Return discipline"). Swap
 ``get_boolean_value`` for ``get_boolean_details`` — same arguments — to see it::
+
+    from fireweave import EvaluationContext
+    from fireweave_harness.fw_harness import fw_control_points
 
     # @fireweave-controlpoint <feature-slug>
     if fw_control_points().get_boolean_value(

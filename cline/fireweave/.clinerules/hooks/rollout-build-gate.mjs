@@ -285,6 +285,18 @@ function resolveScanVocabulary(declaredSurfaces) {
 }
 
 /**
+ * A manifest's declared control points: `controlPoints` in schema 3, `flags`
+ * in schemas 1–2 (Q342). Mirrors contracts' `manifestControlPoints` — this
+ * hook is standalone JS and imports nothing. Returns `fallback` when the
+ * manifest declares neither.
+ */
+function manifestControlPoints(manifest, fallback = []) {
+  if (Array.isArray(manifest?.controlPoints)) return manifest.controlPoints;
+  if (Array.isArray(manifest?.flags)) return manifest.flags;
+  return fallback;
+}
+
+/**
  * Every `harness.surface` a manifest names — schema 1 carries one at the top
  * level, schema 2 one per `surfaces[]` entry. Both are read: a v2 manifest read
  * as v1 would declare no surface at all and quietly widen the scan.
@@ -299,6 +311,93 @@ function collectManifestSurfaces(manifest, into) {
     : []) {
     add(entry?.harness?.surface);
   }
+}
+
+/**
+ * Where a PACKAGE surface (the SDK start profile, fireweave-sdk ADR-0012) keeps
+ * its local values: the conventional control-points file, the call in it, and
+ * one key's entry in that language's spelling. MIRRORS `PACKAGE_CONTROL_POINTS`
+ * in `mcp/rollout-server/src/tools/_verify-eval-site-safe-defaults.ts` — this
+ * hook imports nothing; `rollout-build-gate.test.ts` pins the two together.
+ */
+const PACKAGE_CONTROL_POINTS = {
+  'ts-server': {
+    file: 'src/fireweave/control-points.ts',
+    define: 'defineControlPoints({ … })',
+    entry: (k) => `'${k}': { local: true }`,
+  },
+  web: {
+    file: 'src/fireweave/control-points.ts',
+    define: 'defineControlPoints({ … })',
+    entry: (k) => `'${k}': { local: true }`,
+  },
+  python: {
+    file: 'fireweave_setup/control_points.py',
+    define: 'define_control_points({ … })',
+    entry: (k) => `"${k}": {"local": True}`,
+  },
+  go: {
+    file: 'internal/fireweave/control_points.go',
+    define: 'fw.DefineControlPoints(fw.LocalControlPoints{ … })',
+    entry: (k) => `"${k}": {Local: true}`,
+  },
+  java: {
+    file: 'FireweaveControlPoints.java',
+    define: 'Fw.defineControlPoints(Map.of(…))',
+    entry: (k) => `"${k}", LocalControlPoint.local(true)`,
+  },
+  rust: {
+    file: 'src/fireweave_control_points.rs',
+    define: 'define_control_points([…])',
+    entry: (k) => `("${k}", LocalControlPoint::local(true))`,
+  },
+  dart: {
+    file: 'lib/fireweave/control_points.dart',
+    define: 'defineControlPoints({ … })',
+    entry: (k) => `'${k}': LocalControlPoint.local(true)`,
+  },
+  swift: {
+    file: 'FireweaveLocalControlPoints.swift',
+    define: 'defineControlPoints([ … ])',
+    entry: (k) => `"${k}": .local(true)`,
+  },
+};
+
+/**
+ * "Local ON" for `key` on the manifest's PACKAGE surfaces, or `null` when it
+ * has none (the caller keeps its scaffold text). A surface is a package
+ * surface when its `harness.kind` says so, or when the `project.json`
+ * `surfaces[]` entry with the same `path` carries `harnessKind: 'package'` —
+ * the match `verify_prod_path` makes. A scaffold surface beside them keeps the
+ * `makeDevProvider()` clause.
+ */
+function packageLocalOn(key, manifest, projectRaw) {
+  const harnesses = [
+    manifest?.harness,
+    ...(Array.isArray(manifest?.surfaces)
+      ? manifest.surfaces.map((e) => e?.harness)
+      : []),
+  ].filter((h) => h && typeof h.surface === 'string');
+  const declared = Array.isArray(projectRaw?.surfaces)
+    ? projectRaw.surfaces
+    : [];
+  const isPackage = (h) =>
+    h.kind === 'package' ||
+    declared.some((d) => d?.path === h.path && d?.harnessKind === 'package');
+  const pkg = harnesses.filter(
+    (h) => isPackage(h) && PACKAGE_CONTROL_POINTS[h.surface]
+  );
+  if (pkg.length === 0) return null;
+  const clauses = new Set(
+    pkg.map((h) => {
+      const sp = PACKAGE_CONTROL_POINTS[h.surface];
+      return `add \`${sp.entry(key)}\` to \`${sp.define}\` in that surface's control-points file (\`${sp.file}\`)`;
+    })
+  );
+  const clause = [...clauses].join('; ');
+  return pkg.length === harnesses.length
+    ? clause
+    : `${clause}; on a scaffold surface, that surface's makeDevProvider() devFlags: { '${key}': true }`;
 }
 
 function matchesGlob(path, pattern) {
@@ -562,7 +661,7 @@ function cachedManifestRows(files, findings) {
       feature: rel.slice(prefix.length, -'.json'.length),
       shadowed: raw?._shadowed === true,
       status: raw?.row?.status,
-      flags: raw?.row?.manifest?.flags ?? [],
+      flags: manifestControlPoints(raw?.row?.manifest),
       manifest: raw?.row?.manifest ?? null,
     });
   }
@@ -615,7 +714,7 @@ async function readQueue() {
       raw.kind !== 'upsert-manifest' ||
       typeof raw.feature !== 'string' ||
       typeof raw.branch !== 'string' ||
-      !Array.isArray(raw.manifest?.flags)
+      manifestControlPoints(raw.manifest, null) === null
     ) {
       unreplayable.push({ file, reason: 'not a replayable manifest upsert' });
       continue;
@@ -625,7 +724,7 @@ async function readQueue() {
       feature: raw.feature,
       branch: raw.branch,
       queuedAt: typeof raw._queuedAt === 'string' ? raw._queuedAt : null,
-      flags: raw.manifest.flags,
+      flags: manifestControlPoints(raw.manifest),
       manifest: raw.manifest,
     });
   }
@@ -823,6 +922,7 @@ async function main() {
             origin: 'cache',
             feature: row.feature,
             flag: f,
+            manifest: row.manifest,
           });
       }
     }
@@ -836,6 +936,7 @@ async function main() {
             entryId: e.id,
             queuedAt: e.queuedAt,
             flag: f,
+            manifest: e.manifest,
           });
         }
       }
@@ -891,7 +992,7 @@ async function main() {
       findings.push({
         rule: 'orphan-anchor',
         severity: 'block',
-        message: `coded flag '${coded}' has no manifest entry (orphan flag) — ${anchorMap.get(coded)}`,
+        message: `coded control point '${coded}' has no manifest entry (orphan control point) — ${anchorMap.get(coded)}`,
         fix: `if you authored this manifest it is not in this worktree's view — ${SYNC_FIX}, or drain .fireweave/.queue/`,
       });
     }
@@ -903,7 +1004,7 @@ async function main() {
         severity: 'block',
         ...(origin.origin === 'queue' ? { unsynced: true } : {}),
         message:
-          `manifest flag '${declared}' has no code anchor` +
+          `manifest control point '${declared}' has no code anchor` +
           (origin.origin === 'queue'
             ? ` — declared by the UNSYNCED queued edit ${origin.entryId} ('${origin.feature}'), which teammates cannot see`
             : ''),
@@ -938,21 +1039,30 @@ async function main() {
     // A recorded exception is only legal with `default === true` (the manifest
     // schema enforces it) and downgrades block → warn for an honest kill-switch.
     const ex = flag.default === true ? flag.ramp1Exception : undefined;
+    // A package surface keeps local values in its control-points file; the
+    // scaffold's `makeDevProvider()` devFlags do not exist there (T7).
+    const localOn = packageLocalOn(declared, origin.manifest, proj.raw);
     findings.push(
       ex
         ? {
             rule: 'ramp1-default',
             severity: 'warn',
             ...(origin.origin === 'queue' ? { unsynced: true } : {}),
-            message: `manifest flag '${declared}' ('${origin.feature}') has default true — recorded RAMP-1 exception (${ex.trackedBy}: ${ex.reason})`,
-            fix: `Remediate under ${ex.trackedBy} (owner ${ex.owner}): create the provider flag at 100% ON → verify serving → set eval-site + flags[].default to false, move local ON to makeDevProvider() devFlags, remove ramp1Exception. Never flip code first.`,
+            message: `manifest control point '${declared}' ('${origin.feature}') has default true — recorded RAMP-1 exception (${ex.trackedBy}: ${ex.reason})`,
+            fix:
+              localOn === null
+                ? `Remediate under ${ex.trackedBy} (owner ${ex.owner}): create the provider flag at 100% ON → verify serving → set eval-site + controlPoints[].default to false, move local ON to makeDevProvider() devFlags, remove ramp1Exception. Never flip code first.`
+                : `Remediate under ${ex.trackedBy} (owner ${ex.owner}): serve the control point at 100% ON from its rollout → verify serving → set eval-site + controlPoints[].default to false, move local ON to the control-points file (${localOn}), remove ramp1Exception. Never flip code first.`,
           }
         : {
             rule: 'ramp1-default',
             severity: 'block',
             ...(origin.origin === 'queue' ? { unsynced: true } : {}),
-            message: `manifest flag '${declared}' ('${origin.feature}') has default ${JSON.stringify(flag.default)} — RAMP-1 requires the feature to stay off until ramp`,
-            fix: `Set flags[].default to false for '${declared}' via upsert_rollout_manifest. Local dogfood ON → that surface's makeDevProvider() devFlags: { '${declared}': true } — never fw.flag(key, true). Prod ON is the ramp.`,
+            message: `manifest control point '${declared}' ('${origin.feature}') has default ${JSON.stringify(flag.default)} — RAMP-1 requires the feature to stay off until ramp`,
+            fix:
+              localOn === null
+                ? `Set controlPoints[].default to false for '${declared}' via upsert_rollout_manifest. Local dogfood ON → that surface's makeDevProvider() devFlags: { '${declared}': true } — never fw.controlPoints.getBooleanValue(key, true). Prod ON is the ramp.`
+                : `Set controlPoints[].default to false for '${declared}' via upsert_rollout_manifest. Local dogfood ON → ${localOn} — never a \`true\` call-site default. Prod ON is the ramp.`,
           }
     );
   }
