@@ -587,9 +587,15 @@ build destination the user picked.
 
 #### The shared steps, in order, per surface
 
-1. **SDK ≥ 3.0.0.** Call `mcp__rollout_server__resolve_sdk_install` with
-   `{ cwd, surface, harnessKind: 'package' }` (plus `startProfile` for a Swift
-   surface, which ships both profiles). It applies the 3.0.0 floor for the
+1. **SDK ≥ 3.0.0.** The SDK channel is fw-server's: it follows the environment
+   the project is bound to. Once per run, before the first surface, call
+   `mcp__rollout_server__resolve_sdk_channel` with `{ cwd }`; it reads
+   `server.url` from `.fireweave/project.json` and asks that server. On
+   `ok: false` → stop every scaffold → package move (each surface keeps its
+   scaffold) and show its `detail`; never ask for a channel or default one.
+   Then call `mcp__rollout_server__resolve_sdk_install` with
+   `{ cwd, surface, channel, harnessKind: 'package' }` (plus `startProfile` for
+   a Swift surface, which ships both profiles). It applies the 3.0.0 floor for the
    channel, preflights the start entry and records `surfaces[].sdk`. Run the
    command it returns. If it finds no 3.0.0 release for the surface (Swift
    before a SwiftPM-resolvable release), **stop this surface**: it keeps its
@@ -1242,6 +1248,7 @@ rebuilt tier map.
     { "name": "update_repo_state", "server": "rollout-server" },
     { "name": "assert_dev_checklist", "server": "rollout-server" },
     { "name": "refresh_agent_skills", "server": "rollout-server" },
+    { "name": "resolve_sdk_channel", "server": "rollout-server" },
     { "name": "resolve_sdk_install", "server": "rollout-server" },
     { "name": "issue_browser_key", "server": "rollout-server" },
     { "name": "upsert_rollout_manifest", "server": "rollout-server" },

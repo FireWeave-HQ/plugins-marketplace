@@ -26,7 +26,7 @@ process.stdout.write(j.projectId || j.projects ? 'yes' : 'no');
 # writer (`select_project`, `fw init`) puts identity in before anything else.
 # Fail closed and name it, exactly as an unparseable pointer does.
 if [[ "$bound" != "yes" ]]; then
-  echo "rollout-build-gate: $proj carries no project identity (projectId / projects) — refusing to report a pass on a repo this gate cannot scope. Bind the repo with \`fw init\` or /fireweave:initialise." >&2
+  echo "rollout-build-gate: $proj carries no project identity (projectId / projects) — refusing to report a pass on a repo this gate cannot scope. Bind the repo with \`fw init\`, then run /fireweave:initialise." >&2
   exit 1
 fi
 # The gate itself decides what an absent manifest means (D-C); the wrapper must

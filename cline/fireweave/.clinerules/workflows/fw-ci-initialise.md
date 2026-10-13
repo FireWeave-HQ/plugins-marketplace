@@ -54,7 +54,7 @@ the plan, by FireWeave's script before you (pre), or after you (post):
 | GATE-3F-VANISHED-SURFACES               | never retired in cloud                                                          |
 | 6b identity seam                        | `identitySeam` in pre.json (below)                                              |
 | package-manager ambiguity               | pre: an app with none is `blocked` with a to-do                                 |
-| channel                                 | pre: the plan's channel, or the dev artifact store in FireWeave's dev stack     |
+| channel                                 | `plan.channel` (fw-server's environment); pre installed that line               |
 | Step 0c `orgMatch:false`                | pre: the job's organisation; a mismatch parks before you run                    |
 | 3e "secrets set?" wait                  | never waits: post adds `deploy-secret` to-dos                                   |
 | browser key destination                 | never issued in cloud: post adds a `browser-key` to-do                          |
@@ -72,11 +72,30 @@ hands you.
 **An `agent` app** has `handOver: { step: "install", code, command, guidance,
 sdk }`: FireWeave's own SDK install failed again (`code`, e.g.
 `sdk-install-failed`, `registry-not-allowed`, `package-manager-ambiguous`), and
-the owner's `guidance` says how to do it. Install `sdk.name` (at `sdk.version`
-when set) in that app's directory yourself, following the guidance. `command`
-is what FireWeave ran (null when it could not tell the package manager). Only
-package-manager install commands (`npm`, `pnpm`, `yarn`, `bun`), and only
-inside that app, run as one plain command that names the app's absolute
+the owner's `guidance` says how to do it. Install `sdk.name` in that app's
+directory yourself, following the guidance, on the line `sdk.channel` names.
+Never a bare or untagged install: it takes the production line, which calls
+production.
+
+- `production`: `<sdk.name>@latest`.
+- `staging`: `'<sdk.name>@>=X.Y.Z-rc.1 <X.Y.Z-rd'`, quoted, where `X.Y.Z` is
+  `sdk.version` without its `-rc.N` (null: read it, as part of this install,
+  with `npm view <sdk.name>@next version`). It admits every rc of X.Y.Z and
+  never X.Y.Z itself. With pnpm, write the range into the app's
+  `package.json` `dependencies`, then `pnpm install` (`pnpm add` rewrites a
+  range to exact).
+- `dev`: `'<sdk.name>@^<sdk.version>'`, quoted. `sdk.version` is the dev
+  store's real build: the one its `dev` tag names, or its `latest` when it has
+  no `dev` tag, so never assume a `dev` tag (null: read the tags, as part of
+  this install, with `npm view <sdk.name> dist-tags --json`). The caret is
+  what FireWeave's own dev install records; a bare version is an exact pin in
+  bun. With pnpm, write it into `dependencies` as on staging. FireWeave
+  already pointed the `@fireweaveai` scope at the store in `~/.npmrc`: add no
+  registry setting anywhere.
+
+`command` is what FireWeave ran (null when it could not tell the package
+manager). Only package-manager install commands (`npm`, `pnpm`, `yarn`, `bun`),
+and only inside that app, run as one plain command that names the app's absolute
 directory: `cd <repository>/<app path> && <install>` (`pwd` is the
 repository). The sandbox refuses any other install, and any install behind a
 wrapper (`npx`, `bunx`, `sh -c`), a variable, or a global, workspace or
