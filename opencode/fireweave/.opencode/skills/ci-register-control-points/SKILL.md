@@ -2,6 +2,8 @@
 name: "ci-register-control-points"
 description: "CI variant of control-point registration. Runs inside a FireWeave sandbox on a merge event and produces the DETERMINISTIC extraction with `fw merge register --dry-run --json` — every control point in the tree plus the dependency edges decidable from syntax; the agent only proposes additional (inferred) edges. Never persists anything itself, never asks the user anything, never calls an MCP tool. Use when a workflow says \"register the control points this merge introduced\", or via `/fireweave:ci-register-control-points`."
 compatibility: "opencode"
+metadata:
+  opencode/autoinvoke: "false"
 ---
 > Interaction: gate each decision with the native `question` tool (multi-option; supports multi-select + custom free-text).
 
@@ -63,7 +65,7 @@ the exit code is Step 1's.
 
 ## Forbidden in this skill
 
-`the `question` tool`; editing any file under the checkout; any `rollout-server_*`
+`the `question` tool`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; calling `fw merge register`
 without `--dry-run`.
 

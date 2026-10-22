@@ -148,11 +148,14 @@ const FIX = {
   syncRewrite:
     'run `fw sync` — it rewrites the whole projection, so a partially written ' +
     'or hand-edited one is replaced rather than merged. Nothing needs deleting first.',
+  // `/fireweave:adopt` replaces an older copy of this file and its wrapper
+  // (0049 Stage D): the repair needs no re-initialise.
   gateOutdated:
     'this gate file is older than the CLI that wrote your cache, so `fw sync` ' +
     'cannot clear it — every sync rewrites the cache at the version this gate ' +
-    'rejects. Update the Fireweave plugin, then re-run `/fireweave:initialise` ' +
-    'to rewrite .fireweave/hooks/rollout-build-gate.mjs.',
+    'rejects. Update the Fireweave plugin, then run `/fireweave:adopt`: it ' +
+    'replaces an older .fireweave/hooks/rollout-build-gate.mjs and .sh with the ' +
+    "plugin's copies.",
   queueUnreplayable:
     'run `fw doctor --repair` — it renames the entry out of the queue instead ' +
     'of deleting it, so the edit stays on disk and `fw sync` can finish. Do ' +
@@ -765,7 +768,31 @@ function parseAnchors(text) {
   return keys;
 }
 
-async function walkSourceFiles(dir, relBase, out, extensions) {
+/**
+ * A directory the anchor scan never reads (0049 Stage D): every file under it
+ * would be dropped by the filters `collectAnchorFlags` applies anyway — an
+ * excluded segment in its path, a `<prefix>/**` exclude covering it, or no
+ * source root at, above or below it. The walk used to read `node_modules`
+ * whole and filter afterwards (2.8–3.7 s on a 42,795-directory tree). Pruning
+ * changes no verdict: the files kept, and their order, are the same. Mirrors
+ * `fw gate` (`packages/fw-cli/src/gate/rollout-gate.ts`).
+ */
+function isPrunedDir(relDir, scan) {
+  const segments = relDir.split('/');
+  if (scan.excludeSegments.some((seg) => segments.includes(seg))) return true;
+  for (const g of scan.excludeGlobs) {
+    if (!g.endsWith('/**')) continue;
+    const prefix = g.slice(0, -3);
+    if (relDir === prefix || relDir.startsWith(`${prefix}/`)) return true;
+  }
+  if (scan.sourceRoots.length === 0) return false;
+  return !scan.sourceRoots.some(
+    (r) =>
+      relDir === r || relDir.startsWith(`${r}/`) || r.startsWith(`${relDir}/`)
+  );
+}
+
+async function walkSourceFiles(dir, relBase, out, extensions, scan) {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -776,7 +803,14 @@ async function walkSourceFiles(dir, relBase, out, extensions) {
     if (entry.name.startsWith('.')) continue;
     const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      await walkSourceFiles(join(dir, entry.name), relPath, out, extensions);
+      if (isPrunedDir(relPath, scan)) continue;
+      await walkSourceFiles(
+        join(dir, entry.name),
+        relPath,
+        out,
+        extensions,
+        scan
+      );
     } else if (
       entry.isFile() &&
       extensions.has(extname(entry.name).toLowerCase())
@@ -789,7 +823,7 @@ async function walkSourceFiles(dir, relBase, out, extensions) {
 async function collectAnchorFlags(scan, vocabulary) {
   const files = [];
   // `anchorScanExtensions`, never `extensions` — see `resolveScanVocabulary`.
-  await walkSourceFiles(root, '', files, vocabulary.anchorScanExtensions);
+  await walkSourceFiles(root, '', files, vocabulary.anchorScanExtensions, scan);
   const byKey = new Map();
   for (const relPath of files) {
     if (!isUnderSourceRoot(relPath, scan.sourceRoots)) continue;
@@ -1061,8 +1095,8 @@ async function main() {
             message: `manifest control point '${declared}' ('${origin.feature}') has default ${JSON.stringify(flag.default)} — RAMP-1 requires the feature to stay off until ramp`,
             fix:
               localOn === null
-                ? `Set controlPoints[].default to false for '${declared}' via upsert_rollout_manifest. Local dogfood ON → that surface's makeDevProvider() devFlags: { '${declared}': true } — never fw.controlPoints.getBooleanValue(key, true). Prod ON is the ramp.`
-                : `Set controlPoints[].default to false for '${declared}' via upsert_rollout_manifest. Local dogfood ON → ${localOn} — never a \`true\` call-site default. Prod ON is the ramp.`,
+                ? `Set controlPoints[].default to false for '${declared}' via fw tool upsert-rollout-manifest. Local dogfood ON → that surface's makeDevProvider() devFlags: { '${declared}': true } — never fw.controlPoints.getBooleanValue(key, true). Prod ON is the ramp.`
+                : `Set controlPoints[].default to false for '${declared}' via fw tool upsert-rollout-manifest. Local dogfood ON → ${localOn} — never a \`true\` call-site default. Prod ON is the ramp.`,
           }
     );
   }

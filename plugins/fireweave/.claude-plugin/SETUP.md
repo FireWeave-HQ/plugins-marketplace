@@ -4,10 +4,11 @@ This plugin gives your AI coding tool (Claude Code, Cursor, Cline, Codex)
 deterministic access to FireweaveAI: create tasks, wrap code in safe
 rollouts, manage feature flags, inspect platform state.
 
-The plugin is _deterministic by design_: a Claude Code hook
-(`fw-auth-gate.sh`) intercepts every Fireweave skill invocation, runs
-`fw status`, and triggers an inline OAuth device flow if you're not
-authenticated. The LLM never sees credentials or makes auth decisions.
+The plugin is _deterministic by design_: every skill runs FireWeave's tools
+through the `fw` CLI in your shell (`fw tool <name>`), and its Step 0 checks
+that `fw` is installed, reaches FireWeave and is signed in before it writes
+anything. The LLM never sees credentials or makes auth decisions: `fw` holds
+them. There is no MCP server and no ship command — shipping is a pull request.
 
 ---
 
@@ -71,8 +72,8 @@ This kicks off an OAuth device flow:
 3. CLI persists the token to your OS keyring (preferred) or
    `~/.fireweave/auth.json` (fallback).
 
-You only need to do this once per machine — tokens auto-refresh near
-expiry via the `fw-auth-gate.sh` hook (Level 3, silent).
+You only need to do this once per machine — `fw` refreshes tokens near
+expiry by itself.
 
 ### 2.3 — Bind / re-point a project (`fw select-project`)
 
@@ -96,26 +97,17 @@ of exact commands to run.
 
 ---
 
-## 3. How the hook works
+## 3. How a skill checks auth
 
-When you invoke any Fireweave skill (typed slash command like
-`/fireweave:safe-rollout`, or natural-language dispatch like "use
-safe-rollout for this"), Claude Code fires the `fw-auth-gate.sh` hook
-**before** the LLM sees the prompt. The hook escalates through three
-levels:
+Every FireWeave skill starts with the same Step 0: it runs `fw tool list --json`
+and `fw tool ensure-auth` from your agent's shell. It stops, writing nothing,
+and tells you what to run when:
 
-- **L3** — `fw token rotate --silent`: refresh near-expiry tokens. No
-  user interaction; you see nothing.
-- **L2** — `fw login --inline-device-flow`: if no token (or refresh
-  expired), opens a browser and polls for completion. You click one
-  URL once and the skill resumes automatically.
-- **L1** — fallback: if browser-open fails (headless, SSH) or auth
-  times out, the prompt is blocked with a clear remediation message
-  ("run `fw login` manually and retry").
-
-The hook is **scoped**: matchers are `^/fireweave:` for slash commands
-and `Skill(skill='safe-rollout')` for skill dispatch.
-Other prompts and other plugins are untouched.
+- `fw` is not installed → install it (§1), then `fw plugins install`, which also
+  writes your agent's allow rule for `fw`;
+- the shell is sandboxed or offline and cannot reach FireWeave → `fw plugins
+install`, or run where the network is open;
+- you are not signed in → `fw login`.
 
 ---
 
@@ -123,13 +115,12 @@ Other prompts and other plugins are untouched.
 
 ### "Failed to reconnect to plugin:fireweave:rollout-server"
 
-Usually a stale Claude Code plugin cache from an interrupted install.
-Run the bundled cleanup script:
+An install from before the convergence release still points at the retired MCP
+server. Update the plugin (`/plugin update fireweave@fireweave`); if the
+message stays, it is a stale Claude Code plugin cache from an interrupted
+install — run the bundled cleanup script:
 
 ```bash
-bash ~/.claude/plugins/marketplaces/fireweave-local/plugins/fireweave/.claude-plugin/scripts/cleanup-stale-cache.sh
-
-# or, if installed from another marketplace, use whatever path resolves to:
 bash ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/scripts/cleanup-stale-cache.sh
 ```
 
@@ -152,30 +143,23 @@ Open this URL on a machine with a browser:
 Waiting for completion...
 ```
 
-Open the URL on your laptop / phone, approve, and the hook resumes the
-skill automatically on the headless side.
+Open the URL on your laptop / phone, approve, and `fw login` completes on the
+headless side; then run the skill again.
 
-### "Fireweave CLI (`fw`) is not installed or not on your PATH"
+### "`fw` is not found"
 
-The hook script printed this at L0 because `fw` wasn't found. Install it
-(see §1 above), then retry your prompt. The hook itself will start the
-inline device flow on the retry.
+A skill's Step 0 stopped because `fw` is not on your agent's `PATH`. Install it
+(see §1 above), run `fw plugins install`, then run the skill again.
 
 ### Token expiry / rotation
 
-Tokens auto-rotate at hook time (L3). If the refresh token has also
-expired, L2 falls back to a fresh device flow. You can also force a
-rotation manually:
-
-```bash
-fw token rotate            # explicit; prints status
-fw token rotate --silent   # what the hook calls
-```
+`fw` refreshes tokens itself. If the refresh token has also expired, run
+`fw login` again.
 
 ### "Fireweave preflight unexpectedly invalid"
 
-The skill saw `ready: false` from `fw status` despite the hook having
-fired. Likely a race (env vars cleared mid-session, network blip).
+The skill saw `ready: false` from `fw status`. Likely a race (env vars cleared
+mid-session, network blip).
 Diagnose:
 
 ```bash
@@ -195,9 +179,7 @@ To remove the plugin:
 /plugin uninstall fireweave@fireweave
 ```
 
-The hook is bundled with the plugin, so disabling/uninstalling the
-plugin removes the hook entirely. To clear cached credentials and repo
-state too:
+To clear cached credentials and repo state too:
 
 ```bash
 fw logout --all                # revokes server-side, clears local

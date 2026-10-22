@@ -1,7 +1,9 @@
 ---
 name: "ci-rollout-readiness"
-description: "CI variant of the safe-rollout readiness gate. Runs inside a FireWeave sandbox on a pull-request event (or in-editor before opening a PR) and produces a DETERMINISTIC verdict with `fw pr check --json`; the agent only adds advisory notes. Never asks the user anything, never writes to the repo, never calls an MCP tool. Use when a workflow says \"check this PR for rollout readiness\", when reviewing a FireWeave check-run failure, or via `/fireweave:ci-rollout-readiness`."
+description: "CI variant of the rollout readiness gate. Runs inside a FireWeave sandbox on a pull-request event (or in-editor before opening a PR) and produces a DETERMINISTIC verdict with `fw pr check --json`; the agent only adds advisory notes. Never asks the user anything, never writes to the repo, never calls an MCP tool. Use when a workflow says \"check this PR for rollout readiness\", when reviewing a FireWeave check-run failure, or via `/fireweave:ci-rollout-readiness`."
 compatibility: "opencode"
+metadata:
+  opencode/autoinvoke: "false"
 ---
 > Interaction: gate each decision with the native `question` tool (multi-option; supports multi-select + custom free-text).
 
@@ -69,7 +71,7 @@ an editor reads the same two files.
 
 ## Forbidden in this skill
 
-`the `question` tool`; editing any file under the checkout; any `rollout-server_*`
+`the `question` tool`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; reading `.env*`.
 
 ## What the check run then says

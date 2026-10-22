@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "servers": [
-    {
-      "name": "rollout-server",
-      "launcherRelPath": "mcp/rollout-server/launcher.sh"
-    }
-  ]
-}

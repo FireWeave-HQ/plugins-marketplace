@@ -12,7 +12,8 @@ sandbox. Nobody is watching and there is no one to ask. Most of the work is
 already done: before you start, FireWeave bound the repository to its project,
 recorded the env contract, installed the FireWeave SDK in every app it could,
 and wrote each app's control-points and start files. After you finish,
-FireWeave checks every app, writes `.fireweave/agent-instructions.md` and
+FireWeave checks every app, writes `.fireweave/agent-instructions.md`, the
+agent entry files (`AGENTS.md`, a `CLAUDE.md` block, a Cursor rule) and
 `/work/.fw/setup/result.json`, commits to `fireweave/setup` and opens the PR.
 
 Your job is the part that needs judgment, per app: wire the start module into
@@ -40,24 +41,24 @@ your notes. Be quick: you are not re-checking the plan, you are applying it.
 You never ask. Each gate the interactive initialise would raise is answered by
 the plan, by FireWeave's script before you (pre), or after you (post):
 
-| initialise ask                          | Answered by                                                                     |
-| --------------------------------------- | ------------------------------------------------------------------------------- |
-| Step 1 "Let FireWeave manage rollouts?" | the plan: the repository is Managed and ticked                                  |
-| Step 2 teamAgents                       | the plan; post adds a `/fireweave:adopt` to-do (agent wiring is not in this PR) |
-| 3a envs carrying real traffic           | the plan's environments                                                         |
-| 3b INIT-B11 Metrics unbound             | the plan; post adds the manual-ramp to-do                                       |
-| 3c where each prod-tier env runs        | post: a `deploy-secret` to-do per production environment                        |
-| 3d env-source confirm                   | not asked: the start profile reads `FIREWEAVE_ENV` itself                       |
-| FW_ENV_ALIASES confirm                  | not asked: no aliases on a start-profile app                                    |
-| GATE-3F-SURFACE-SELECTION               | the plan's selected apps; pre marks the rest `blocked`                          |
-| GATE-3F-VANISHED-SURFACES               | never retired in cloud                                                          |
-| 6b identity seam                        | `identitySeam` in pre.json (below)                                              |
-| package-manager ambiguity               | pre: an app with none is `blocked` with a to-do                                 |
-| channel                                 | `plan.channel` (fw-server's environment); pre installed that line               |
-| Step 0c `orgMatch:false`                | pre: the job's organisation; a mismatch parks before you run                    |
-| 3e "secrets set?" wait                  | never waits: post adds `deploy-secret` to-dos                                   |
-| browser key destination                 | never issued in cloud: post adds a `browser-key` to-do                          |
-| hard PARK (SCN-16)                      | per app: mark that app `not-set-up` and continue with the next                  |
+| initialise ask                          | Answered by                                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Step 1 "Let FireWeave manage rollouts?" | the plan: the repository is Managed and ticked                                             |
+| Step 2 teamAgents                       | the plan; post writes the agent entry files, and adds a `/fireweave:adopt` to-do for hooks |
+| 3a envs carrying real traffic           | the plan's environments                                                                    |
+| 3b INIT-B11 Metrics unbound             | the plan; post adds the manual-ramp to-do                                                  |
+| 3c where each prod-tier env runs        | post: a `deploy-secret` to-do per production environment                                   |
+| 3d env-source confirm                   | not asked: the start profile reads `FIREWEAVE_ENV` itself                                  |
+| FW_ENV_ALIASES confirm                  | not asked: no aliases on a start-profile app                                               |
+| GATE-3F-SURFACE-SELECTION               | the plan's selected apps; pre marks the rest `blocked`                                     |
+| GATE-3F-VANISHED-SURFACES               | never retired in cloud                                                                     |
+| 6b identity seam                        | `identitySeam` in pre.json (below)                                                         |
+| package-manager ambiguity               | pre: an app with none is `blocked` with a to-do                                            |
+| channel                                 | `plan.channel` (fw-server's environment); pre installed that line                          |
+| Step 0c `orgMatch:false`                | pre: the job's organisation; a mismatch parks before you run                               |
+| 3e "secrets set?" wait                  | never waits: post adds `deploy-secret` to-dos                                              |
+| browser key destination                 | never issued in cloud: post adds a `browser-key` to-do                                     |
+| hard PARK (SCN-16)                      | per app: mark that app `not-set-up` and continue with the next                             |
 
 ## The owner's guidance
 
@@ -157,7 +158,8 @@ analysis did not record, all from code you can cite: the import line as it
 appears, the counter and histogram call shapes, where the instrument comes from,
 a wrapper the repo prefers, the tag convention. Never invent a convention: when
 the app emits no metrics, keep `client: "none"`. Post writes all of it into
-`.fireweave/agent-instructions.md`, next to the per-change metrics check:
+the app's metrics file under `.fireweave/instructions/` (indexed by
+`.fireweave/agent-instructions.md`), beside the per-change metrics check:
 **Before you add a metric.** Write that section whatever the plan's
 observability says about Metrics (`bindings.observability.state` is the Metrics
 unit; Logs and Traces are bound separately), because metrics can be connected
@@ -244,13 +246,15 @@ standard ones):
   FireWeave commits and pushes.
 - Installing or removing packages: FireWeave installed the SDK. The one
   exception is the install an `agent` app hands you, inside that app.
-- `issue_browser_key`, `update_repo_state`, `upsert_rollout_manifest`, and any
+- Any `fw tool` run — `fw tool issue-browser-key`, `fw tool update-repo-state`
+  and `fw tool upsert-rollout-manifest` among them — and any
   `/harness-migration` call.
-- Writing `.fireweave/agent-instructions.md`, `.fireweave/project.json`, or
-  `/work/.fw/setup/result.json`: FireWeave writes them after you.
+- Writing `.fireweave/agent-instructions.md`, `.fireweave/instructions/`,
+  `.fireweave/project.json`, or `/work/.fw/setup/result.json`: FireWeave
+  writes them after you.
 - Coding-agent wiring (`.claude/`, `.cursor/`, `CLAUDE.md`, `AGENTS.md`, build
-  gate hooks): `/fireweave:adopt` adds it after the merge, and FireWeave removes
-  it from this PR.
+  gate hooks): FireWeave writes the entry files after you, `/fireweave:adopt`
+  adds the hooks after the merge, and FireWeave reverts any edit you make there.
 - Writing `.env` or `.env.*` files other than `.env.example`, or any key value.
 - Network other than reading this repository's files and the install an
   `agent` app hands you.

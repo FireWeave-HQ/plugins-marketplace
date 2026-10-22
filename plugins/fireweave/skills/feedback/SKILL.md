@@ -1,6 +1,6 @@
 ---
 name: feedback
-description: Report that FireWeave behaved wrong in this session. Captures the agent session, enriches it with local FireWeave state (CLI status, cache lockfile, manifest versions, MCP tool drift), redacts it locally, takes the user's own remarks, proposes a category, and uploads the bundle to FireWeave after explicit confirmation. Use when the user says "this feels off", "FireWeave is broken", "something's wrong with the rollout skill", "give feedback", "report a problem", "troubleshoot FireWeave", or invokes `/fireweave:feedback`.
+description: Report that FireWeave behaved wrong in this session. Captures the agent session, enriches it with local FireWeave state (CLI status, cache lockfile, manifest versions, tool drift), redacts it locally, takes the user's own remarks, proposes a category, and uploads the bundle to FireWeave after explicit confirmation. Use when the user says "this feels off", "FireWeave is broken", "something's wrong with the rollout skill", "give feedback", "report a problem", "troubleshoot FireWeave", or invokes `/fireweave:feedback`.
 activation:
   globs: []
   manual: false
@@ -17,15 +17,31 @@ local state that explains most failures, and the user's own words.
 
 **Nothing leaves the machine without the user seeing what it is first.**
 
+## Running FireWeave's tools (`fw tool`)
+
+This skill runs FireWeave's tools through the `fw` CLI in your shell, as `fw tool <name>`. There is no FireWeave MCP server.
+
+- **Which `fw`.** Run `command -v fw`; when it prints nothing, use `~/.fireweave/bin/fw` (`fw.exe` on Windows) if that file exists. Then run `fw tool list --json`: its `binary.realpath` is the `fw` that answered. When that is not the installed FireWeave binary (`~/.fireweave/bin/fw`, or wherever the user installed it), stop and say which `fw` is first on `PATH`.
+- **Input.** Write the tool's input as one JSON object to `.fireweave/tmp/<name>.json` with your file-editing tool, then run `fw tool <name> --input-file .fireweave/tmp/<name>.json` from the repository root. A tool that needs no input runs as `fw tool <name>`. Leave `cwd` out: `fw tool` takes it from the shell's directory, clamped to the repository. `.fireweave/.gitignore` ignores `tmp/`; add that line when it is missing.
+- **Output.** One JSON envelope, `{ "status", "exitCode", "reason"?, "result"? }`; `result` is the tool's own answer. Exit `0` ok · `1` refused · `2` bad input · `3` auth (`fw login`) · `4` upgrade (`fw self-update`) · `5` unavailable (retry later). A refusal never exits 0.
+- **Plain commands.** One `fw …` command per shell call, and each `fw tool` command on its own (FireWeave's hook refuses one joined to anything else); other commands may form a plain `&&` chain: no redirection, no heredocs, no `$(…)`, no `VAR=` prefixes, no globs, and never `fw api`. Hosts pre-approve plain `fw tool`, `fw status` and `fw sync` commands; `fw manifest …`, `fw login` and `fw select-project` ask the user first.
+
 ## Step 0 — Soft precondition (degrade, never PARK)
 
-Run `mcp__rollout-server__ensure_auth` with `{ cwd: <absolute open-workspace root> }`.
+Run `fw tool ensure-auth`.
+
+**Only a missing `fw` stops this skill**, because `fw` is what collects (Step 4).
+When `fw` is not found (see **Which `fw`**), tell the user to install the `fw`
+CLI (`docs/install.md`) and run `fw plugins install`, which lets this agent run
+`fw`, then run this skill again. Write nothing first.
 
 Unlike every other FireWeave skill, this one **does NOT PARK** on a bad result.
 A repo that is unauthenticated, unbound, or org-mismatched is exactly the repo
 whose owner needs to be heard. Record the failure **as evidence** — note the
-`ok`, `repo_binding` and `create_permission` values in the session account
-written in Step 1 — and continue.
+envelope's `exitCode` and the `ok`, `repo_binding` and `create_permission`
+values of its `result` in the session account written in Step 1 — and continue.
+A sandboxed or offline shell (`exitCode` 5, or `create_permission.cause`
+`unreachable`) is evidence too.
 
 Collection never needs auth. Only the upload does, and Step 6 handles a missing
 profile by keeping the bundle and printing the command that resumes it.
@@ -79,8 +95,6 @@ to carry a problem that is not theirs.
 
 ```json
 {
-  "SKILL_EXPECTED_TOOL_MANIFEST": [
-    { "name": "ensure_auth", "server": "rollout-server" }
-  ]
+  "SKILL_EXPECTED_TOOL_MANIFEST": [{ "name": "ensure-auth", "via": "fw tool" }]
 }
 ```

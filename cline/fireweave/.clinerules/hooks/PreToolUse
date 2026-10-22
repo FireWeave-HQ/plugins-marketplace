@@ -1,10 +1,3 @@
 #!/usr/bin/env bash
-# Cline PreToolUse hook — Fireweave auth gate for the rollout MCP servers.
-input="$(cat)"
-if printf '%s' "$input" | grep -qE '"server_name"[[:space:]]*:[[:space:]]*"(rollout-server)"'; then
-  if ! bash "$(dirname "$0")/fw-auth-gate-core.sh" </dev/null; then
-    printf '%s' '{"cancel": true, "errorMessage": "Fireweave auth gate failed — run: fw login"}'
-    exit 0
-  fi
-fi
-printf '%s' '{"cancel": false}'
+# Cline PreToolUse hook — FireWeave's shell-command gate (fw-shell-gate.sh).
+exec bash "$(dirname "$0")/fw-shell-gate.sh" cline

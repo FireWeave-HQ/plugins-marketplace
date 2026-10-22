@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "rollout-server": {
-      "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/rollout-server/launcher.sh",
-      "args": []
-    }
-  }
-}

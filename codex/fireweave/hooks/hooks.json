@@ -2,12 +2,23 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__rollout_server__.*",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$PLUGIN_ROOT/hooks/fw-auth-gate-core.sh\"",
+            "command": "bash \"$PLUGIN_ROOT/hooks/fw-shell-gate.sh\" exit",
             "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$PLUGIN_ROOT/hooks/fw-session-check.sh\" codex",
+            "timeout": 10
           }
         ]
       }

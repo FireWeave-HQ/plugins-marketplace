@@ -1,6 +1,6 @@
 # ci-rollout-readiness
 
-> CI variant of the safe-rollout readiness gate. Runs inside a FireWeave sandbox on a pull-request event (or in-editor before opening a PR) and produces a DETERMINISTIC verdict with `fw pr check --json`; the agent only adds advisory notes. Never asks the user anything, never writes to the repo, never calls an MCP tool. Use when a workflow says "check this PR for rollout readiness", when reviewing a FireWeave check-run failure, or via `/fireweave:ci-rollout-readiness`.
+> CI variant of the rollout readiness gate. Runs inside a FireWeave sandbox on a pull-request event (or in-editor before opening a PR) and produces a DETERMINISTIC verdict with `fw pr check --json`; the agent only adds advisory notes. Never asks the user anything, never writes to the repo, never calls an MCP tool. Use when a workflow says "check this PR for rollout readiness", when reviewing a FireWeave check-run failure, or via `/fireweave:ci-rollout-readiness`.
 >
 > _User-triggered (Cline does not auto-activate workflows). Run with `/fw-ci-rollout-readiness.md`._
 
@@ -70,7 +70,7 @@ an editor reads the same two files.
 
 ## Forbidden in this skill
 
-`ask_followup_question`; editing any file under the checkout; any `rollout-server*`
+`ask_followup_question`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; reading `.env*`.
 
 ## What the check run then says

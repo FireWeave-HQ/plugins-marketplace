@@ -64,7 +64,7 @@ the exit code is Step 1's.
 
 ## Forbidden in this skill
 
-`ask_followup_question`; editing any file under the checkout; any `rollout-server*`
+`ask_followup_question`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; calling `fw merge register`
 without `--dry-run`.
 

@@ -17,14 +17,35 @@ reads the old provider: the FireWeave UI shows it progressing and **no real
 user sees anything change**. Nothing server-side can detect that, which is why
 step 6 reports back.
 
+## Running FireWeave's tools (`fw tool`)
+
+This skill runs FireWeave's tools through the `fw` CLI in your shell, as `fw tool <name>`. There is no FireWeave MCP server.
+
+- **Which `fw`.** Run `command -v fw`; when it prints nothing, use `~/.fireweave/bin/fw` (`fw.exe` on Windows) if that file exists. Then run `fw tool list --json`: its `binary.realpath` is the `fw` that answered. When that is not the installed FireWeave binary (`~/.fireweave/bin/fw`, or wherever the user installed it), stop and say which `fw` is first on `PATH`.
+- **Input.** Write the tool's input as one JSON object to `.fireweave/tmp/<name>.json` with your file-editing tool, then run `fw tool <name> --input-file .fireweave/tmp/<name>.json` from the repository root. A tool that needs no input runs as `fw tool <name>`. Leave `cwd` out: `fw tool` takes it from the shell's directory, clamped to the repository. `.fireweave/.gitignore` ignores `tmp/`; add that line when it is missing.
+- **Output.** One JSON envelope, `{ "status", "exitCode", "reason"?, "result"? }`; `result` is the tool's own answer. Exit `0` ok · `1` refused · `2` bad input · `3` auth (`fw login`) · `4` upgrade (`fw self-update`) · `5` unavailable (retry later). A refusal never exits 0.
+- **Plain commands.** One `fw …` command per shell call, and each `fw tool` command on its own (FireWeave's hook refuses one joined to anything else); other commands may form a plain `&&` chain: no redirection, no heredocs, no `$(…)`, no `VAR=` prefixes, no globs, and never `fw api`. Hosts pre-approve plain `fw tool`, `fw status` and `fw sync` commands; `fw manifest …`, `fw login` and `fw select-project` ask the user first.
+
+## Step 0 — `fw` reaches FireWeave (fail closed)
+
+Run `fw tool list --json`, then `fw tool ensure-auth`, from this shell, not from what an earlier session saw. **PARK, writing nothing,** and say which case it is:
+
+| What happened                                                                             | Tell the user                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fw` is not found (see **Which `fw`**)                                                    | install the `fw` CLI (`docs/install.md`), then run `fw plugins install`: it installs FireWeave's skills and the allow rule that lets this agent run `fw`. Then run this skill again                                   |
+| `fw tool list --json` lacks a tool this skill's **Tool manifest** names                   | this `fw` is older than the skill: `fw self-update`, then `fw plugins install`                                                                                                                                        |
+| `fw tool ensure-auth` exits `5`, or its `result.create_permission.cause` is `unreachable` | this shell cannot reach FireWeave: it is sandboxed or offline. `fw plugins install` writes this agent's allow rule for `fw`, which lets `fw` reach FireWeave from a sandboxed shell; or run where the network is open |
+| `fw tool ensure-auth` exits `3`                                                           | `fw login`, then run this skill again                                                                                                                                                                                 |
+
 ## HARD ORDER
 
+0. **`fw` here** — Step 0 above; nothing is written before it passes.
 1. **Detect** — find every direct provider read, and every deploy-sdk residue.
 2. **Confirm** — show the plan; never rewrite without the user seeing it.
 3. **Rewrite** — provider wiring, then identity, then call sites, then anchors, then the tracker unification, then the deploy-sdk strip, then the upgrade notice. A scaffold moving to the start profile (Sources D–J) takes §3h in place of 3a–3c and 3e.
 4. **Re-align the repo contract** — the artifacts `initialise` owns and this skill has never touched: the telemetry inventory, the env contract, `PROVIDERS.md`, and `agent-instructions.md`. For a surface that moved to the start profile, also re-key it and re-author its manifests (§4f) and move its credentials (§4g).
 5. **Verify** — typecheck/build; a migration that does not compile is not done.
-6. **Report** — `POST /v1/projects/:projectId/harness-migration`.
+6. **Report** — `fw tool report-harness-migration` (`POST /v1/projects/:projectId/harness-migration`).
 
 Do not skip 6. An unreported migration reads as "never happened", and the
 project page will keep warning that control points moved without the code.
@@ -82,7 +103,7 @@ identity that `reconcile` and the dev-checklist gates read out of the committed
 tree; rewriting them here would look like feature work that never happened. The
 manifest's harness `api` may stay `"openfeature"` — the schema accepts both values
 forever, and a manifest rewrite is a server round-trip
-(`upsert_rollout_manifest`) that this skill has no reason to make. Set
+(`upsert-rollout-manifest`) that this skill has no reason to make. Set
 `"control-points"` only if you are already re-authoring that manifest for
 another reason.
 
@@ -406,7 +427,7 @@ Scope it to real anchors:
   `sourceRoots`.
 
 **Verify by scan, not by diff.** After rewriting, run
-`mcp__rollout_server__detect_rollout_ready` and confirm the anchor count is
+`fw tool detect-rollout-ready` and confirm the anchor count is
 **unchanged**. A drop means a rewrite ate a key or broke a line; the count is
 the only check that catches that mechanically.
 
@@ -538,7 +559,7 @@ committed tree; `/fw-cleanup` is the only thing that retires a stamp.
 
 **Verify by grep, not by eye.** After the edit, `@fireweaveai/deploy-sdk` must
 match **zero** times across the repo, including lockfiles once dependencies are
-reinstalled. Then re-run `mcp__rollout_server__detect_rollout_ready` and confirm
+reinstalled. Then re-run `fw tool detect-rollout-ready` and confirm
 the anchor count is unchanged, exactly as §3d requires — an edit that reached
 into a tracker or an anchor shows up there and nowhere else.
 
@@ -582,22 +603,24 @@ test-settings recipe, a Go functions-framework handler.
 file, `.env.example`, a developer `.env`, Info.plist, an xcconfig that is
 tracked, a commit, a log line or the session summary. Sources move variable
 NAMES; values move in the user's secret stores (§4g). The one key this skill
-ever holds is a new browser key from `issue_browser_key`, and it goes only to the
+ever holds is a new browser key from `issue-browser-key`, and it goes only to the
 build destination the user picked.
 
 #### The shared steps, in order, per surface
 
 1. **SDK ≥ 3.0.0.** The SDK channel is fw-server's: it follows the environment
-   the project is bound to. Once per run, before the first surface, call
-   `mcp__rollout_server__resolve_sdk_channel` with `{ cwd }`; it reads
+   the project is bound to. Once per run, before the first surface, run
+   `fw tool resolve-sdk-channel`; it reads
    `server.url` from `.fireweave/project.json` and asks that server. On
    `ok: false` → stop every scaffold → package move (each surface keeps its
    scaffold) and show its `detail`; never ask for a channel or default one.
-   Then call `mcp__rollout_server__resolve_sdk_install` with
-   `{ cwd, surface, channel, harnessKind: 'package' }` (plus `startProfile` for
+   Then run `fw tool resolve-sdk-install` with
+   `{ surface, channel, harnessKind: 'package' }` (plus `startProfile` for
    a Swift surface, which ships both profiles). It applies the 3.0.0 floor for the
-   channel, preflights the start entry and records `surfaces[].sdk`. Run the
-   command it returns. If it finds no 3.0.0 release for the surface (Swift
+   channel, preflights the start entry and records `surfaces[].sdk`. Install with
+   `fw tool sdk-install` and the same input: it runs the plan's command, and only
+   when that is a JavaScript package manager adding `@fireweaveai/*` packages;
+   for any other plan it refuses and names the command, which you run yourself. If it finds no 3.0.0 release for the surface (Swift
    before a SwiftPM-resolvable release), **stop this surface**: it keeps its
    scaffold, which still reads through FireWeave, and the summary says why.
    The channel it picks **is** the endpoint the app will call. The command
@@ -700,7 +723,7 @@ Delete `fw_harness.py`, `fw_providers.py` and `fw_tracker.py` from whichever
 scaffold directory exists, then the directory's `__init__.py` once nothing else
 is in it. **An old `fireweave/` directory must go**: it shadows the PyPI
 `fireweave` package, so `from fireweave.start import …` imports the app's own
-directory, and `verify_prod_path` fails it as `no-shadowing-package`. If it
+directory, and `verify-prod-path` fails it as `no-shadowing-package`. If it
 holds customer modules, stop and ask the user where they move (for example
 `fireweave_setup/`) before touching their imports. Drop the `[openfeature]`
 extra if it is still installed.
@@ -709,7 +732,7 @@ extra if it is still installed.
 
 | Scaffold                                                                                                              | Package                                                                                                                                                                                                                                                    |
 | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `require github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v2` (or the unsuffixed module)                                 | `resolve_sdk_install`'s `go get github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3@latest && go mod tidy` (staging: the highest `v3.0.0-rc.N`; + `go mod vendor` when vendored); `go.mod` records that exact version by design (limit 1); no local `replace` |
+| `require github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v2` (or the unsuffixed module)                                 | `resolve-sdk-install`'s `go get github.com/FireWeave-HQ/fireweave-sdk/sdks/go/v3@latest && go mod tidy` (staging: the highest `v3.0.0-rc.N`; + `go mod vendor` when vendored); `go.mod` records that exact version by design (limit 1); no local `replace` |
 | import `.../sdks/go/v2/fireweave`                                                                                     | import `.../sdks/go/v3/fw`                                                                                                                                                                                                                                 |
 | `MakeDevProvider()` → `ControlPoints: map[string]bool{"k": true}`                                                     | `internal/fireweave/control_points.go`: `var ControlPoints = fw.DefineControlPoints(fw.LocalControlPoints{"k": {Local: true}})`                                                                                                                            |
 | `fireweave.InitFwHarness()` in `main`                                                                                 | `fw.Start(fw.Options{ControlPoints: appfw.ControlPoints})` (or `fw.MustStart`) in the serving path, after the app's own config loading, with `defer fw.Shutdown(context.Background())`                                                                     |
@@ -736,7 +759,7 @@ older one whose call sites use `fwFlag(...)`.
 | `FwProviders.getFwClient().controlPoints().getBooleanValue(k, false, ctx)` / `fwFlag(k, false, id)` | `Fw.controlPoints().getBooleanValue(k, false, EvaluationContext.builder().targetingKey(id).build())`                                                                                                                                                                |
 | `FwProviders.registerFwTarget(id, properties)`                                                      | `Fw.identify(id, Map.of(...))` (it never throws)                                                                                                                                                                                                                    |
 | `FwTracker.FW_STAMPS`                                                                               | `.fireweave/stamps.json`                                                                                                                                                                                                                                            |
-| `ai.fireweave:fireweave-openfeature`                                                                | removed; `ai.fireweave:fireweave-sdk` at ≥ 3.0.0 from `resolve_sdk_install`'s snippet                                                                                                                                                                               |
+| `ai.fireweave:fireweave-openfeature`                                                                | removed; `ai.fireweave:fireweave-sdk` at ≥ 3.0.0 from `resolve-sdk-install`'s snippet                                                                                                                                                                               |
 
 The start API is in `ai.fireweave.sdk.start` (`Fw`, `StartOptions`,
 `LocalControlPoint`, `LocalControlPoints`). Delete `FwHarness.java`,
@@ -757,7 +780,7 @@ The start API is in `ai.fireweave.sdk.start` (`Fw`, `StartOptions`,
 | dev runs relying on the scaffold's default environment                   | `.cargo/config.toml` `[env] FIREWEAVE_ENV = "development"` at the workspace root, or the app's `.env` loader called before `start`                                                        |
 
 `cargo add 'fireweave@3'` (the requirement `"3"`, the latest 3.x) comes from
-`resolve_sdk_install`; a staging surface gets the highest `rust/v3.0.0-rc.N` git
+`resolve-sdk-install`; a staging surface gets the highest `rust/v3.0.0-rc.N` git
 tag instead (limit 1). A
 client-shipped Rust target (Tauri `src-tauri`, a Leptos `hydrate` build) has no
 start profile to move to and must never get a server key: stop that surface and
@@ -795,7 +818,7 @@ contract describing code you just deleted — and the next agent believes it,
 because believing it is exactly what those files are for.
 
 **`--reinit` is not a substitute, and cannot be made into one.**
-`record_rollout_env_contract` appends names to `.env.example` and has no prune
+`record-rollout-env-contract` appends names to `.env.example` and has no prune
 path, and `--reinit` re-declares surfaces without touching `.env.example`,
 `.fireweave/.gitignore`, `PROVIDERS.md`, or any harness file. Nothing else in
 the system will ever remove a stale name. That is why this step lives here.
@@ -836,16 +859,16 @@ finding worth naming, not a typo to quietly overwrite.
 ### 4b. Write the env contract
 
 ```
-mcp__rollout_server__record_rollout_env_contract { cwd, apiSurface, webSurface, webappUrl? }
+fw tool record-rollout-env-contract --input-file .fireweave/tmp/record-rollout-env-contract.json
 ```
+
+with the input `{ apiSurface, webSurface, webappUrl? }`.
 
 It writes the committed `fireweave.md` at the repo root, appends the required
 NAMES to `.env.example`, and **mints nothing** — no key endpoint is called and no
 credential is returned. Pass `apiSurface: true` when a `ts-server`, `python` or
 `java` surface exists, `webSurface: true` when a `web` surface does, and
 `webappUrl` when you know it so the operator gets a clickable link.
-
-`cwd` is the same absolute workspace root the rest of this skill uses.
 
 **A surface that moved to the start profile (§3h)** is passed in
 `packageSurfaces: [{ surfaceId, surface, startProfile?, buildDestinations? }]`
@@ -856,9 +879,9 @@ a BUILD variable with no `.env` entry, and the tool echoes its build destination
 back for §4g. Pass `apiSurface` / `webSurface` only for scaffold surfaces that
 remain.
 
-**On a missing tool → soft-continue**, naming the gap. An older bundle without
-it leaves a worse-documented repo, not a broken one; do not PARK and do not
-hand-write `fireweave.md` from memory.
+**When the tool refuses → soft-continue**, naming the gap. A run without the env
+contract leaves a worse-documented repo, not a broken one; do not PARK and do
+not hand-write `fireweave.md` from memory.
 
 ### 4c. Purge the beacon and FW-telemetry env contract
 
@@ -909,8 +932,8 @@ the session summary — the start profile's configuration lives in the
 agent-instructions section 4d writes.
 
 **Hard assert before moving on:** no file under the workspace contains a
-`project-api-key_` / `fw_public_` / `fw_ingest_pub_` prefix followed by key
-material. This skill mints nothing, so a match means a credential was pasted in —
+`project-api-key_` / `fw_public_` / `fw_ingest_pub_` / `fw_agk_` prefix followed
+by key material. This skill mints nothing, so a match means a credential was pasted in —
 stop, tell the user to move it to the deploy environment, and rotate it.
 
 ### 4d. Regenerate `.fireweave/agent-instructions.md`
@@ -921,6 +944,16 @@ path §3a already resolves (`<dir of this SKILL.md>/../` plus this host's name f
 it). Do not reconstruct it from the file already in the repo, and do not copy the
 template's prose into this skill: two skills carrying one template is how the two
 drift, and the version in the repo is by definition the stale one.
+
+The template is split (0049 Stage B): `.fireweave/agent-instructions.md` becomes
+an index with one stub heading per section, and the sections themselves go into
+topic files under `.fireweave/instructions/`, as that template's table lists.
+When every surface is a `ts-server` or `web` package surface, render all of it
+with `fw tool apply-setup-artifacts` and `parts: ["agent-instructions"]`
+instead of writing it; it also deletes the topic files of an app that left.
+Otherwise write the index and the topic files by hand, and leave out the text
+the template marks `setup-author`. A single-file `agent-instructions.md` from
+before the split is replaced by the index, never kept beside it.
 
 Every section it lists is required. The ones a migrated repo is most often
 missing entirely:
@@ -947,7 +980,7 @@ old file.
 
 Write `metricsClient` onto each surface in `.fireweave/project.json`
 `surfaces[]`, and send the same value with
-`mcp__rollout_server__update_repo_state`:
+`fw tool update-repo-state`, its input `{ "fields": … }` holding:
 
 ```jsonc
 {
@@ -1001,11 +1034,11 @@ fw repo declare-surfaces --project {projectId} --json --surfaces '[{"surface":"t
 `entrypoint` = the entrypoint, `harnessKind: 'package'`, `startProfile`
 (`server` | `client`) when the surface is not plain server, `trackerPath` = the
 §3h stamps file, `rolloutCredentialEnv` as above. Keep `surfaceId` and
-`metricsClient`. `sdk` is written by `resolve_sdk_install`; do not hand-write it.
+`metricsClient`. `sdk` is written by `resolve-sdk-install`; do not hand-write it.
 
 **Then the manifests.** Every feature manifest whose `harness.surface` is a
 moved surface is re-authored — resolve it through the seam and write it with
-`mcp__rollout_server__upsert_rollout_manifest`, passing the resolved
+`fw tool upsert-rollout-manifest`, passing the resolved
 `contentHash` as `baseContentHash` (on `conflict`, re-apply on top of `current`
 and retry with its hash). Never edit a manifest file in place. Change the
 harness block only:
@@ -1042,14 +1075,16 @@ for local mode sets `FIREWEAVE_ENV`.
 
 **Client surfaces (web, a Swift app) need a NEW browser key.** The scaffold's web
 key was server-family (`project-api-key_…`), which the start profile refuses, so
-this is a new key, not a rename. Call
-`mcp__rollout_server__issue_browser_key { projectId, surfaceId, label: "fireweave-init:<surfaceId>" }`:
+this is a new key, not a rename. Run
+`fw tool issue-browser-key --input-file .fireweave/tmp/issue-browser-key.json --write-to .fireweave/tmp/browser-key`
+with the input `{ projectId, surfaceId, label: "fireweave-init:<surfaceId>" }`:
 
-- `issued` — the key is returned once. It goes to exactly one place: the build
-  destination the user picked (CI, the hosting build environment, an untracked
-  xcconfig), through that destination's own secret command or pasted by the
-  user. Never into a developer `.env` (it would make `vite dev` remote), a
-  tracked file, a log line or the summary.
+- `issued` — the key is written to `.fireweave/tmp/browser-key` (git-ignored)
+  and never printed. It goes to exactly one place: the build destination the
+  user picked (CI, the hosting build environment, an untracked xcconfig),
+  through that destination's own secret command or pasted by the user. Then
+  delete the file. Never into a developer `.env` (it would make `vite dev`
+  remote), a tracked file, a log line or the summary.
 - `exists` — an active browser key for this surface already exists and its
   secret cannot be read back. Ask whether the destinations already hold it;
   re-issue with `rotate: true` only if the user says so.
@@ -1072,13 +1107,13 @@ not migrated, and reporting it as such makes the project page lie.
 
 For a surface §3h moved, also:
 
-- `mcp__rollout_server__verify_prod_path` with `{ feature }` on one manifest per
+- `fw tool verify-prod-path` with `{ feature }` on one manifest per
   moved surface. The package check set must pass — `sdk-floor`, `start-first`,
   `one-start`, `no-hand-rolled-init`, `key-family`, `start-profile` and the
   language's own checks (`no-shadowing-package` for Python, `module-path` and
   `no-local-replace` for Go, `no-shadowing-mod` for Rust, …). `warn` is
   advisory; a `fail` is fixed before step 6.
-- `mcp__rollout_server__detect_rollout_ready`: the anchor count is unchanged.
+- `fw tool detect-rollout-ready`: the anchor count is unchanged.
 - One local boot in the development run configuration: the `[fireweave:local]`
   line appears and a seeded control point reads its seeded value.
 
@@ -1087,17 +1122,25 @@ For a surface §3h moved, also:
 Send the report **over the CLI profile**, not the project API key.
 
 `{projectId}` comes from the repo's FireWeave pointer — read `projectId` from
-`.fireweave/project.json`, or call `mcp__rollout_server__select_project` if the
-pointer is absent. Do not invent it and do not use the project _name_.
+`.fireweave/project.json`. When the pointer is absent, the repository is not
+bound: tell the user to run `fw init`, and do not send the report. Do not
+invent it and do not use the project _name_.
 
-```
-fw api POST /v1/projects/{projectId}/harness-migration --body '{
+Write the input to `.fireweave/tmp/report-harness-migration.json`, for example
+
+```json
+{
+  "projectId": "<projectId>",
   "status": "migrated",
   "sdkVersion": "<installed @fireweaveai/server-sdk version>",
   "surfaces": ["server", "web"],
   "notes": "go surface still reads PostHog directly"
-}'
+}
 ```
+
+and run
+`fw tool report-harness-migration --input-file .fireweave/tmp/report-harness-migration.json`.
+It posts to `/v1/projects/{projectId}/harness-migration`.
 
 **Substitute every value before sending.** The fields above are a worked
 example, not a template to paste: `sdkVersion` must be the version actually in
@@ -1110,7 +1153,7 @@ migration badge exactly as sent. Omit `notes` rather than sending filler.
 
 **Scaffold → package is recorded on the same route.** The body has no field for
 it, so it goes in the fields that exist: `sdkVersion` is the 3.x version
-`resolve_sdk_install` recorded (one language: that SDK; several: the one
+`resolve-sdk-install` recorded (one language: that SDK; several: the one
 `surfaces` lists first, the rest in `notes`), `surfaces` lists the surfaces
 that moved, and `notes` says what moved, for example
 `"scaffold → package (start profile): ts-server, web; go kept its scaffold
@@ -1124,29 +1167,22 @@ key — the server key family, `project-api-key_…` — which an app uses to
 evaluate control points; the browser key (`fw_public_…`,
 `FIREWEAVE_BROWSER_KEY`) is the client family. Neither authenticates this
 endpoint: it is on the org plane (CLI access tokens and `fw_org_*` API keys), so
-a key-bearing POST 401s. `fw api` carries the CLI profile, which is the
+a key-bearing POST 401s. `fw tool` carries the CLI profile, which is the
 credential this route accepts — and the one plane a repo always has, including
 a dev-only project that never gets a project key at all.
 
-**Precondition — check before you send.** Unlike `initialise`, this skill has no
-Step 0 that already gated on auth, so establish both here:
+**Precondition.** Step 0 already established that `fw` is here and that
+`fw tool ensure-auth` sees the profile and this repository's binding
+(`result.repo_binding.bound`, and `orgMatch` not `false`). That settles the
+profile, the org binding and `{projectId}`.
 
-- `fw --version` resolves. If not, the report cannot be sent from this session.
-- `fw api GET /v1/projects/{projectId}` returns 2xx. This settles the profile,
-  the org binding, and `{projectId}` in one call.
-
-If either fails, **do not guess a credential and do not fall back to the
-project key** — the endpoint would reject it. Report the harness as migrated in the
-session summary, name the project page as still-warning, and say which of the
-two checks failed so the operator can run `fw login` / `fw profile use` and
-re-send.
-
-On a failure, say so in the session summary and name the project page as
-still-warning. Do not PARK: the harness itself is migrated and committed — an
-unreported success is a stale page, not a broken repo. Note that a missing or
-ambiguous profile fails **before** any HTTP call, so `fw api` prints an error
-envelope with no status code — treat "no 2xx observed" as the failure
-condition, not "a non-2xx was returned".
+If the report exits non-zero, **do not guess a credential and do not fall back
+to the project key** — the endpoint would reject it. Report the harness as
+migrated in the session summary, name the project page as still-warning, and
+say what the envelope's `status` and `reason` were so the operator can run
+`fw login` / `fw profile use` and re-send. Do not PARK: the harness itself is
+migrated and committed — an unreported success is a stale page, not a broken
+repo.
 
 Status honestly:
 
@@ -1238,27 +1274,27 @@ rebuilt tier map.
 
 ## Tool manifest
 
+Every `fw tool` this skill runs; Step 0 checks each one is in `fw tool list --json`.
+
 ```json
 {
   "SKILL_EXPECTED_TOOL_MANIFEST": [
-    { "name": "select_project", "server": "rollout-server" },
-    { "name": "detect_rollout_ready", "server": "rollout-server" },
-    { "name": "reconcile", "server": "rollout-server" },
-    { "name": "record_rollout_env_contract", "server": "rollout-server" },
-    { "name": "update_repo_state", "server": "rollout-server" },
-    { "name": "assert_dev_checklist", "server": "rollout-server" },
-    { "name": "refresh_agent_skills", "server": "rollout-server" },
-    { "name": "resolve_sdk_channel", "server": "rollout-server" },
-    { "name": "resolve_sdk_install", "server": "rollout-server" },
-    { "name": "issue_browser_key", "server": "rollout-server" },
-    { "name": "upsert_rollout_manifest", "server": "rollout-server" },
-    { "name": "verify_prod_path", "server": "rollout-server" }
+    { "name": "ensure-auth", "via": "fw tool" },
+    { "name": "detect-rollout-ready", "via": "fw tool" },
+    { "name": "record-rollout-env-contract", "via": "fw tool" },
+    { "name": "update-repo-state", "via": "fw tool" },
+    { "name": "resolve-sdk-channel", "via": "fw tool" },
+    { "name": "resolve-sdk-install", "via": "fw tool" },
+    { "name": "sdk-install", "via": "fw tool" },
+    { "name": "issue-browser-key", "via": "fw tool" },
+    { "name": "upsert-rollout-manifest", "via": "fw tool" },
+    { "name": "verify-prod-path", "via": "fw tool" },
+    { "name": "apply-setup-artifacts", "via": "fw tool" },
+    { "name": "report-harness-migration", "via": "fw tool" }
   ]
 }
 ```
 
-The skill already called the first three in prose while declaring none, so a
-host had no way to tell in advance whether its bundle could satisfy this skill.
-A tool that is absent degrades the step that uses it — §3d's anchor re-scan and
-§4b's env contract both name their own soft-continue — but the manifest is what
-lets a host say so BEFORE the rewrite rather than midway through it.
+Every tool comes from the one `fw` binary, so a tool missing from
+`fw tool list --json` means an `fw` older than this skill: Step 0 stops for
+`fw self-update` BEFORE the rewrite rather than midway through it.

@@ -9,8 +9,10 @@
  *
  * The "promote, not wrap" model (D26): BOTH branches are present and the
  * RUNNING ENVIRONMENT — resolved by NAME in `fw-providers.ts`, not a bare
- * boolean — selects which one is live. Nothing is swapped at promotion;
- * `safe-rollout` ramps via `flag.control` and never mutates this file.
+ * boolean — selects which one is live. Nothing is swapped at promotion: a
+ * merge into an environment branch registers the rollout, a person starts it,
+ * and FireWeave ramps the control point server-side, never by editing this
+ * file.
  *
  * `initFwHarness()` MUST be the FIRST awaited statement in the app entrypoint
  * (§11.6) so control points are live before any read runs. `verify_prod_path`

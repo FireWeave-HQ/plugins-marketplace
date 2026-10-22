@@ -1,6 +1,6 @@
 ---
 name: "fw-ci-rollout-readiness"
-description: "CI variant of the safe-rollout readiness gate. Runs inside a FireWeave sandbox on a pull-request event (or in-editor before opening a PR) and produces a DETERMINISTIC verdict with `fw pr check --json`; the agent only adds advisory notes. Never asks the user anything, never writes to the repo, never calls an MCP tool. Use when a workflow says \"check this PR for rollout readiness\", when reviewing a FireWeave check-run failure, or via `/fireweave:ci-rollout-readiness`."
+description: "CI variant of the rollout readiness gate. Runs inside a FireWeave sandbox on a pull-request event (or in-editor before opening a PR) and produces a DETERMINISTIC verdict with `fw pr check --json`; the agent only adds advisory notes. Never asks the user anything, never writes to the repo, never calls an MCP tool. Use when a workflow says \"check this PR for rollout readiness\", when reviewing a FireWeave check-run failure, or via `/fireweave:ci-rollout-readiness`."
 disable-model-invocation: true
 ---
 > Interaction: there is no skill-callable prompt tool — gate each decision by STOP and ask the user to pick a labelled option (or move the gate into the bundled MCP server via Elicitation).
@@ -69,7 +69,7 @@ an editor reads the same two files.
 
 ## Forbidden in this skill
 
-`a stop-and-ask user prompt`; editing any file under the checkout; any `mcp_rollout-server_*`
+`a stop-and-ask user prompt`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; reading `.env*`.
 
 ## What the check run then says

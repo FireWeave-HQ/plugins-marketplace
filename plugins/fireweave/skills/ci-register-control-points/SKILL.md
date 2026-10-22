@@ -8,6 +8,7 @@ aliases:
   cursor: fw-ci-register-control-points
   cline: fw-ci-register-control-points
   codex: fw_ci_register_control_points
+disable-model-invocation: true
 ---
 
 # CI control-point registration (deterministic extraction, advisory graph)
@@ -68,7 +69,7 @@ the exit code is Step 1's.
 
 ## Forbidden in this skill
 
-`AskUserQuestion`; editing any file under the checkout; any `mcp__rollout-server__*`
+`AskUserQuestion`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; calling `fw merge register`
 without `--dry-run`.
 

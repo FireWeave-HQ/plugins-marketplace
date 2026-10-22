@@ -7,7 +7,7 @@ description: "Attach the current coding agent's FireWeave standing loop to a rep
 # Adopt (attach my agent to an already-initialised repo)
 
 Run when the **repo is already FireWeave-initialised** and this machine's coding agent is
-missing the standing loop (HARD ORDER + hooks). Typical cases:
+missing the standing loop (the agent entry files + hooks). Typical cases:
 
 1. Repo was initialised before team-agent selection existed (Cursor-only disk detect) — teammate opens Claude.
 2. First init selected `teamAgents` but a new agent joins later that was not in the set.
@@ -21,52 +21,70 @@ and only this agent's loop is missing.
 an agent loop.
 
 **Harness-skipping by design.** `adopt` does **not** scaffold `fw-harness`, does **not**
-call `record_rollout_env_contract`, does **not** re-enumerate environments, and does **not**
+run the `record-rollout-env-contract` tool, does **not** re-enumerate environments, and does **not**
 author, retire, or otherwise touch rollout-ready manifests or change stamps — those are
 server-owned and belong to the feature loop, not to attaching an agent. If the repo is not
 initialised → PARK and send the user to `/fireweave:initialise`.
 
 `--check` runs Steps 0–3 and reports the wanted-vs-present diff; writes nothing.
 
-## Step 0 — Auth + repo-bind precondition (fail closed, allowlist)
+## Running FireWeave's tools (`fw tool`)
+
+This skill runs FireWeave's tools through the `fw` CLI in your shell, as `fw tool <name>`. There is no FireWeave MCP server.
+
+- **Which `fw`.** Run `command -v fw`; when it prints nothing, use `~/.fireweave/bin/fw` (`fw.exe` on Windows) if that file exists. Then run `fw tool list --json`: its `binary.realpath` is the `fw` that answered. When that is not the installed FireWeave binary (`~/.fireweave/bin/fw`, or wherever the user installed it), stop and say which `fw` is first on `PATH`.
+- **Input.** Write the tool's input as one JSON object to `.fireweave/tmp/<name>.json` with your file-editing tool, then run `fw tool <name> --input-file .fireweave/tmp/<name>.json` from the repository root. A tool that needs no input runs as `fw tool <name>`. Leave `cwd` out: `fw tool` takes it from the shell's directory, clamped to the repository. `.fireweave/.gitignore` ignores `tmp/`; add that line when it is missing.
+- **Output.** One JSON envelope, `{ "status", "exitCode", "reason"?, "result"? }`; `result` is the tool's own answer. Exit `0` ok · `1` refused · `2` bad input · `3` auth (`fw login`) · `4` upgrade (`fw self-update`) · `5` unavailable (retry later). A refusal never exits 0.
+- **Plain commands.** One `fw …` command per shell call, and each `fw tool` command on its own (FireWeave's hook refuses one joined to anything else); other commands may form a plain `&&` chain: no redirection, no heredocs, no `$(…)`, no `VAR=` prefixes, no globs, and never `fw api`. Hosts pre-approve plain `fw tool`, `fw status` and `fw sync` commands; `fw manifest …`, `fw login` and `fw select-project` ask the user first.
+
+## Step 0 — `fw`, auth and the repo binding (fail closed, allowlist)
 
 **SCN-16 — PARK writes nothing.** Do not create or modify any FireWeave path until every gate below passes. On any PARK, leave the working tree unchanged for this run.
 
-Run `mcp__rollout_server__ensure_auth` with
-`{ cwd: <absolute open-workspace root> }` (required when known — MCP process
-cwd is often not the repo). `ok: false` → `fw login` and PARK.
+### Step 0.0 — `fw` reaches FireWeave from this shell (fail closed)
+
+Run `fw tool list --json`, then `fw tool ensure-auth`, from this shell, not from what an earlier session saw. **PARK, writing nothing,** and say which case it is:
+
+| What happened                                                                             | Tell the user                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fw` is not found (see **Which `fw`**)                                                    | install the `fw` CLI (`docs/install.md`), then run `fw plugins install`: it installs FireWeave's skills and the allow rule that lets this agent run `fw`. Then run this skill again                                   |
+| `fw tool list --json` lacks a tool this skill's **Tool manifest** names                   | this `fw` is older than the skill: `fw self-update`, then `fw plugins install`                                                                                                                                        |
+| `fw tool ensure-auth` exits `5`, or its `result.create_permission.cause` is `unreachable` | this shell cannot reach FireWeave: it is sandboxed or offline. `fw plugins install` writes this agent's allow rule for `fw`, which lets `fw` reach FireWeave from a sandboxed shell; or run where the network is open |
+| `fw tool ensure-auth` exits `3`                                                           | `fw login`, then run this skill again                                                                                                                                                                                 |
+
+### Step 0.1 — the repo binding
+
+Read `result.repo_binding` from the same `fw tool ensure-auth` envelope.
 Continue **ONLY** when `repo_binding.bound === true` **and**
 `repo_binding.orgMatch !== false`. Missing / undefined `repo_binding` → PARK
-as unbound. On `orgMatch: false`: switch profile (`fw profile use`) or
-`select_project` with `{ cwd }` if the bind is stale — do not blindly rebind.
+as unbound. On `orgMatch: false`: switch profile (`fw profile use`) or, when
+the bind is stale, `fw select-project` (it asks first) — do not blindly rebind.
 **Do not write FireWeave files while unbound.** A profile alone does NOT mean
 this repo is bound to a project.
 
-Then run the tool-manifest check via `mcp__rollout_server__list_registered_tools`.
-
 ## Steps
 
-| Step                              | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 — Bound gate**                | Read `.fireweave/project.json`. **The repo is initialised iff the pointer carries identity — `projectId` (or `projects{}`).** Do not read `rolloutReady` and do not branch on `version`: the block is a shape fact, not an initialisation fact, and `rolloutReady.initialized` no longer exists. (It used to gate this step; a block that never wrote the key was indistinguishable from `initialized: false`, so `adopt` PARKed on healthy repos and the standing-loop hooks no-opped on them — same defect, three doors.) Else PARK: _"this repo is not initialised — run `/fireweave:initialise` first"_ — **write nothing.** **`adopt` never initialises.** Confirm `.fireweave/agent-instructions.md` exists; if missing on an initialised repo → PARK toward `/fireweave:initialise --reinit` (genuine drift, not an adopt case) — **write nothing.** **Why PARK here but WARN for a missing build-gate (N4):** every standing loop points at `agent-instructions.md`, so attaching HARD ORDER / hooks that link a missing SoT is not useful; the build-gate is orthogonal to standing instructions and does not justify a key-rotating `--reinit`. Note `mcp.mode`, `installedInto[]`, and whether `teamAgents` is **absent** (pre-teamAgents initialisation — Step 5 will seed) or **present**.                                                                                                                                                                                                                                                                                               |
-| **2 — Choose agents**             | Detect coding-agent markers (`.claude/`, `.cursor/`, …). Then one `request_user_input` (multi-select) for **this** machine. **V1 full-materialize:** `cursor`, `claude` only. Other hosts are link-only experimental (optional second ask). Host detection alone is unreliable. Empty selection → re-ask once; if still empty → PARK (write nothing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **3 — Diff**                      | For each selected agent, compute wanted-vs-present against the **Write matrix** below. Report what is missing / stale before writing. **Also check the shared build gate:** note whether `.fireweave/hooks/rollout-build-gate.mjs` and `.fireweave/hooks/rollout-build-gate.sh` exist. A repository set up by FireWeave's cloud setup has **neither**: the setup PR carries only what the app needs to run, and `adopt` adds the coding-agent wiring, the build gate included. Either file **missing** is not a PARK (do **not** PARK, do **not** force `--reinit` / key rotate): Step 4 copies it from the installed plugin bundle. If the `.sh` exists but is non-executable → note mode-bit repair for Step 4. On `--check` → stop here (write nothing; still report build-gate status).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **4 — Write standing loop**       | **First write step.** Write **only** missing/stale standing-instruction artifacts for the selected agents (templates below). **Merge, never replace** `.cursor/hooks.json` / `.claude/settings.json`. Upsert `CLAUDE.md` / `AGENTS.md` FireWeave blocks by stable marker. Scripts: overwrite from template, `chmod +x`. Build gate: when `.fireweave/hooks/rollout-build-gate.mjs` or `.sh` is **missing**, copy it from the **installed plugin bundle's** `hooks/` directory (`<dir of this SKILL.md>/../../hooks/`, never `packages/fw-plugins/` platform source) and `chmod +x` the `.sh`; when it exists, leave its content alone and only repair the `.sh` mode bits. Do **not** change `mcp.mode`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **5 — Bookkeeping (server-side)** | `installedInto[]` and `teamAgents` are **repo-scoped server state**. Write them with `mcp__rollout_server__update_repo_state` — one call, `{ fields: { installedInto: [...], teamAgents: [...] } }` — never by hand-editing `project.json`. Both are **set-valued and UNION on merge**, which is exactly what a second machine adopting concurrently needs: send only what this run added and the server folds it in. The write is online-only and fails closed; on `refused` → PARK and report, do not fall back to editing the file. It writes **no file at all** — not `rolloutReady.installedInto[]`, not `rolloutReady.teamAgents`, in any repo — so `fw sync` is how this worktree sees the merged row back. Append written paths (sorted, deduped). **Union** selected agents (sorted, deduped). **When `teamAgents` is absent**, first **derive** the existing set exactly as `/fireweave:initialise --reinit` rule 2 — agents implied by `installedInto[]` paths, plus disk markers that already carry FireWeave standing-loop artifacts (HARD ORDER / FireWeave rule / intent-gate — **not** bare `.cursor/` or `.claude/` alone) — then union the selection into **that** derived set; never into a bare `[]` (N3 — first adopt must not drop other agents already wired). A **present** array (including `[]`) is authoritative: union into it as-is (post-`--remove` present-`[]` stays intentional). Record per-machine adopt fact in gitignored `.fireweave/local.json` as `adopt: { agents, at, skillVersion }` — do **not** write credential / env / capability / `mcp.mode` fields. |
-| **6 — Verify**                    | `mcp__rollout_server__detect_rollout_ready` + `mcp__rollout_server__reconcile` with `phase: "build"`. Assert each written script is executable, `.fireweave/hooks/rollout-build-gate.sh` included. **Feedback reachable:** the `feedback` skill exists for every selected agent. **Claude** (when selected): `CLAUDE.md` carries the HARD ORDER block, `.claude/hooks/rollout-intent-gate.sh` is executable, `.claude/settings.json` wires it under `UserPromptSubmit` and `SessionStart`, and `git check-ignore` matches none of them (they must be committable). Fix any miss before finishing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **7 — Reload notice**             | Name **only** the agents whose reloadable artifacts were written this run (from this run's `installedInto[]` appends): Cursor → Developer → Reload Window; Claude Code → hooks apply on the next session. If Step 4 copied the build gate, say so: the gate now runs on this machine's agent stop hooks. If `mcp.mode` is `cursor-plugin` and the adopting agent is **not** Cursor → **notice only** (do not run): non-Cursor hosts may need `fw mcp install` for MCP transport. Standing instructions ≠ MCP wiring. `--reinit` remains available for harness/credential drift — prefer `adopt` for standing-loop-only gaps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Step                              | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 — Bound gate**                | Read `.fireweave/project.json`. **The repo is initialised iff the pointer carries identity — `projectId` (or `projects{}`).** Do not read `rolloutReady` and do not branch on `version`: the block is a shape fact, not an initialisation fact, and `rolloutReady.initialized` no longer exists. (It used to gate this step; a block that never wrote the key was indistinguishable from `initialized: false`, so `adopt` PARKed on healthy repos and the standing-loop hooks no-opped on them — same defect, three doors.) Else PARK: _"this repo is not initialised — run `/fireweave:initialise` first"_ — **write nothing.** **`adopt` never initialises.** Confirm `.fireweave/agent-instructions.md` exists; if missing on an initialised repo → PARK toward `/fireweave:initialise --reinit` (genuine drift, not an adopt case) — **write nothing.** **Why PARK here but WARN for a missing build-gate (N4):** every standing loop points at `agent-instructions.md`, so attaching HARD ORDER / hooks that link a missing SoT is not useful; the build-gate is orthogonal to standing instructions and does not justify a key-rotating `--reinit`. Note `mcp.mode`, `installedInto[]`, and whether `teamAgents` is **absent** (pre-teamAgents initialisation — Step 5 will seed) or **present**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **2 — Choose agents**             | Detect coding-agent markers (`.claude/`, `.cursor/`, …). Then one `request_user_input` (multi-select) for **this** machine. **V1 full-materialize:** `cursor`, `claude` only. Other hosts are link-only experimental (optional second ask). Host detection alone is unreliable. Empty selection → re-ask once; if still empty → PARK (write nothing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **3 — Diff**                      | For each selected agent, compute wanted-vs-present against the **Write matrix** below. Report what is missing / stale before writing. A stop hook script (`.claude/hooks/rollout-build-gate-stop.sh`, `.cursor/hooks/fireweave-rollout-stop.sh`) without its `# fireweave-stop-hook: 2` line is an older copy, which forces a turn on every reply of a fresh clone: stale (the plugin's session-start check names these and sends the person here). **Also check the shared build gate:** note whether `.fireweave/hooks/rollout-build-gate.mjs` and `.fireweave/hooks/rollout-build-gate.sh` exist, and whether each matches the installed plugin bundle's copy byte for byte (one that differs is an older copy: stale). A repository set up by FireWeave's cloud setup has **neither**: the setup PR carries only what the app needs to run, and `adopt` adds the coding-agent wiring, the build gate included. Either file **missing** is not a PARK (do **not** PARK, do **not** force `--reinit` / key rotate): Step 4 copies it from the installed plugin bundle. If the `.sh` exists but is non-executable → note mode-bit repair for Step 4. On `--check` → stop here (write nothing; still report build-gate status).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **4 — Write standing loop**       | **First write step.** **The agent entry files come from FireWeave's renderer, never by hand:** write `{ "teamAgents": [<the repo's teamAgents, plus the agents selected in Step 2>] }` to `.fireweave/tmp/render-entries.json` and run `fw tool render-entries --input-file .fireweave/tmp/render-entries.json`. It writes `AGENTS.md` (FireWeave's rollout contract), the `CLAUDE.md` block, the Cursor rule `.cursor/rules/fireweave-rollout-ready.mdc` and the per-app rules exactly as FireWeave's cloud setup does, upgrades an older FireWeave block in place (`format=1` becomes `format=2` once the project's capabilities allow it), leaves a current one unchanged, and removes the HARD ORDER blocks an older adopt appended. **Never write or edit `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `.fireweave/agents-core.md` or the Cursor rule yourself.** Its `result.rendered` paths go into `installedInto[]` (Step 5); tell the user each line of `result.todos`; for an entry `skipped` because someone edited FireWeave's block, ask the user, and on yes run it again with `"editedBlock": "replace"` added to the input. A non-zero exit writes nothing: report its `reason` and clear the cause (`fw login` for exit `3`, retry for `5`) before Step 6. Then write **only** missing/stale hooks, hook scripts, settings wiring and skill copies for the selected agents (templates below). **Merge, never replace** `.cursor/hooks.json` / `.claude/settings.json`. Scripts: overwrite from template, `chmod +x`. **Build gate:** when `.fireweave/hooks/rollout-build-gate.mjs` or `.sh` is **missing**, copy it from the **installed plugin bundle's** `hooks/` directory (`<dir of this SKILL.md>/../../hooks/`, never `packages/fw-plugins/` platform source) and `chmod +x` the `.sh`. **Refresh an older copy:** when either file exists but differs from the bundle's, overwrite both from the bundle — they are FireWeave's own files, and an older wrapper never runs `fw gate` — then `chmod +x` the `.sh`; when both match, only repair the `.sh` mode bits. Do **not** change `mcp.mode`. |
+| **5 — Bookkeeping (server-side)** | `installedInto[]` and `teamAgents` are **repo-scoped server state**. Write them with `fw tool update-repo-state` — one call, input `{ "fields": { "installedInto": [...], "teamAgents": [...] } }` — never by hand-editing `project.json`. Both are **set-valued and UNION on merge**, which is exactly what a second machine adopting concurrently needs: send only what this run added and the server folds it in. The write is online-only and fails closed; on `refused` → PARK and report, do not fall back to editing the file. It writes **no file at all** — not `rolloutReady.installedInto[]`, not `rolloutReady.teamAgents`, in any repo — so `fw sync` is how this worktree sees the merged row back. Append written paths (sorted, deduped). **Union** selected agents (sorted, deduped). **When `teamAgents` is absent**, first **derive** the existing set exactly as `/fireweave:initialise --reinit` rule 2 — agents implied by `installedInto[]` paths, plus disk markers that already carry FireWeave standing-loop artifacts (HARD ORDER / FireWeave rule / intent-gate — **not** bare `.cursor/` or `.claude/` alone) — then union the selection into **that** derived set; never into a bare `[]` (N3 — first adopt must not drop other agents already wired). A **present** array (including `[]`) is authoritative: union into it as-is (post-`--remove` present-`[]` stays intentional). Record per-machine adopt fact in gitignored `.fireweave/local.json` as `adopt: { agents, at, skillVersion }` — do **not** write credential / env / capability / `mcp.mode` fields.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **6 — Verify**                    | `fw tool detect-rollout-ready` + `fw tool reconcile` with `{ "phase": "build" }`. Assert each written script is executable, `.fireweave/hooks/rollout-build-gate.sh` included. **Feedback reachable:** the `feedback` skill exists for every selected agent. **Entry files:** `CLAUDE.md` (or `.claude/CLAUDE.md`) holds FireWeave's `claude-entry` block and `AGENTS.md` its `agents-core` block (Step 4's `result.rendered`, or a to-do saying why one was left alone). **Claude** (when selected): `.claude/hooks/rollout-intent-gate.sh` is executable, `.claude/settings.json` wires it under `UserPromptSubmit` and `SessionStart`, and `git check-ignore` matches none of them (they must be committable). Fix any miss before finishing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **7 — Reload notice**             | Name **only** the agents whose reloadable artifacts were written this run (from this run's `installedInto[]` appends): Cursor → Developer → Reload Window; Claude Code → hooks apply on the next session. If Step 4 copied or refreshed the build gate, say so: the gate now runs on this machine's agent stop hooks. Each adopted agent runs FireWeave's tools as `fw tool …`: on a machine where `fw` is not set up for that agent yet, `fw plugins install` sets it up (**notice only** — do not run it). `--reinit` remains available for harness/credential drift — prefer `adopt` for standing-loop-only gaps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Every clarification uses `request_user_input`.
 
 ## Write matrix
 
-| Agent                                                              | Artifacts `adopt` ensures                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude`                                                           | `CLAUDE.md` HARD ORDER block (template below); `.claude/hooks/rollout-intent-gate.sh` (chmod +x); `.claude/hooks/rollout-build-gate-stop.sh` (chmod +x) — the build gate itself, without which Claude has only an advisory reminder; `.claude/settings.json` → merge `SessionStart` + `UserPromptSubmit` + `Stop` (templates below)                                                                                                          |
-| `cursor`                                                           | `.cursor/rules/fireweave-rollout-ready.mdc`; `.cursor/hooks.json` `sessionStart`/`stop` entries; `.cursor/hooks/fireweave-rollout-{session,stop}.sh` (chmod +x); FireWeave skills under `.cursor/skills/` copied **from the installed plugin bundle only** (never from `packages/fw-plugins/` platform source), each as a **whole directory** — never `SKILL.md` alone, or initialise arrives without its `harness/**` templates (C27 below) |
-| `cline` / `codex` / `opencode` / `copilot` / `gemini` / `windsurf` | **Link-only experimental** — agent-instructions link / thin rule only; do not invent full HARD ORDER templates                                                                                                                                                                                                                                                                                                                               |
+| Agent                                                              | Artifacts `adopt` ensures                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claude`                                                           | `CLAUDE.md` block, `AGENTS.md` and the per-app rules (Step 4's `fw tool render-entries`); `.claude/hooks/rollout-intent-gate.sh` (chmod +x); `.claude/hooks/rollout-build-gate-stop.sh` (chmod +x) — the build gate itself, without which Claude has only an advisory reminder; `.claude/settings.json` → merge `SessionStart` + `UserPromptSubmit` + `Stop` (templates below)                                                                                                                         |
+| `cursor`                                                           | `.cursor/rules/fireweave-rollout-ready.mdc` and the per-app rules (Step 4's `fw tool render-entries`); `.cursor/hooks.json` `sessionStart`/`stop` entries; `.cursor/hooks/fireweave-rollout-{session,stop}.sh` (chmod +x); FireWeave skills under `.cursor/skills/` copied **from the installed plugin bundle only** (never from `packages/fw-plugins/` platform source), each as a **whole directory** — never `SKILL.md` alone, or initialise arrives without its `harness/**` templates (C27 below) |
+| `cline` / `codex` / `opencode` / `copilot` / `gemini` / `windsurf` | **Link-only experimental** — they read `AGENTS.md` (Step 4); Step 4's `fw tool render-entries` also puts FireWeave's block into a `.github/copilot-instructions.md`, `.junie/AGENTS.md`, root `AGENTS.override.md` or `GEMINI.md` the repository already has (and creates `GEMINI.md` beside a `.gemini/`); do not invent full HARD ORDER templates                                                                                                                                                    |
 
-Shared: `.fireweave/hooks/rollout-build-gate.{mjs,sh}` — checked in Step 3; Step 4 copies a missing one from the installed bundle's `hooks/` and repairs `.sh` mode bits. Commit them with the rest: every teammate's agent runs the same gate.
+Shared: `.fireweave/hooks/rollout-build-gate.{mjs,sh}` — checked in Step 3; Step 4 copies a missing one, and refreshes an older one, from the installed bundle's `hooks/` and repairs `.sh` mode bits. Commit them with the rest: every teammate's agent runs the same gate.
 
 **V1 completeness:** Claude and Cursor rows must be fully materialised. Link-only rows are optional and cheap.
 
@@ -86,10 +104,11 @@ Copy `<skill-dir>/**`, never `<skill-dir>/SKILL.md` alone — and take
 `<skill-dir>` from the bundle as it is named there, since hosts rename it
 (`initialise`, `fw-initialise` on Cursor, `fw_initialise` on Codex).
 
-Copy the **whole** FireWeave skill set (`initialise`, `adopt`, `safe-rollout`,
-`migrate-harness`, `cleanup`), not just the one you were thinking about — a
-half-refreshed set is a repo where `safe-rollout` reads the seam and `cleanup`
-still tries to delete files. Overwrite stale copies rather than skipping them on
+Copy the **whole** FireWeave skill set (`initialise`, `adopt`,
+`migrate-harness`, `cleanup`, `feedback`), not just the one you were thinking
+about — a half-refreshed set is a repo where `adopt` reads the seam and `cleanup`
+still tries to delete files. A copied `fw-rollout` directory is the removed
+`safe-rollout` skill: delete it, since nothing it calls exists any more. Overwrite stale copies rather than skipping them on
 "already present": a repo whose data migrated to fw-server while its skill copies
 stayed behind has an agent authoring manifest files into a tree where the gate no
 longer reads them, and **nothing errors to say so**. Stale readers fail loudly;
@@ -98,14 +117,14 @@ who is not told their copied skills changed has no reason to reload.
 
 ## Idempotency and merge rules
 
-- Second run is a **no-op** apart from refreshing a stale HARD ORDER / script template. Report "already current" when the diff is empty.
+- Second run is a **no-op** apart from refreshing a stale entry block, script template or build gate. Report "already current" when the diff is empty.
 - `.claude/settings.json` and `.cursor/hooks.json`: **read → merge → write**. Dedupe hook entries by `command`. Never emit a file containing only FireWeave entries.
-- `CLAUDE.md` / `AGENTS.md`: locate the FireWeave block by the stable marker `FireWeave rollout-ready — HARD ORDER`; replace in place; otherwise append. Do not reorder surrounding user content.
+- `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md` and the Cursor rule: only `fw tool render-entries` writes them (Step 4). It replaces FireWeave's own block in place between its markers, removes an older HARD ORDER block, and never reorders or edits the team's text.
 - Scripts: overwrite from the templates below, then `chmod +x`.
 
 ## Do not
 
-- Call `record_rollout_env_contract`, or ask about cloud secrets. (Nothing in FireWeave mints a
+- Run the `record-rollout-env-contract` tool, or ask about cloud secrets. (Nothing in FireWeave mints a
   credential any more — both key families are issued by the operator in the portal — so there are
   no keys for adopt to rotate either.)
 - Scaffold or rewrite `fw-harness`, `fw-tracker`, or entrypoint wiring.
@@ -115,109 +134,6 @@ who is not told their copied skills changed has no reason to reload.
 - Change `rolloutReady.mcp.mode` (host transport is initialise's job).
 - Run while unbound or on a non-initialised repo.
 - Write any file on PARK (Steps 0–3).
-
----
-
-## Cursor rule template
-
-Write `.cursor/rules/fireweave-rollout-ready.mdc`:
-
-```markdown
----
-description: FireWeave rollout-ready — mandatory conventions for every feature change in an initialised repo
-alwaysApply: true
----
-
-# FireWeave rollout-ready (promote-not-wrap)
-
-Read [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md).
-
-## HARD ORDER — every user-facing or control-point-gated feature
-
-1. **FIRST** author the manifest with `mcp__rollout_server__upsert_rollout_manifest` `{ feature, manifest, baseContentHash }` (Manifest contract in agent-instructions) + mint `chg_`/`stmp_` + apply the stamp policy (per-surface stamps by default — append each stamp to its own surface's `FW_STAMPS`, in `.fireweave/stamps.<ext>` on a start-profile surface; one shared stamp only when single-project + every surface's harness is surface-aware). **FireWeave stores the manifest — do not write a manifest file yourself.**
-2. Implement behind the harness control point (`fw.controlPoints.getBooleanValue(<key>, false, ctx)`) with `// @fireweave-controlpoint <key>` at each evaluation site.
-   On a start-profile surface `fw` comes from the SDK's start module, never a harness: add
-   `'<key>'` with local value `true` to that surface's control-points file to try it locally.
-   - ts-server: `await fw.controlPoints.getBooleanValue('<key>', false, { targetingKey: user.id })` (`@fireweaveai/server-sdk/start`); `src/fireweave/control-points.ts`
-   - web: `fw.controlPoints.getBooleanValue('<key>', false)` (`@fireweaveai/web-sdk/start`, no per-call context); `src/fireweave/control-points.ts`
-   - Python: `fw.control_points.get_boolean_value('<key>', False, EvaluationContext(user_id))`; `fireweave_setup/control_points.py`
-   - Go: `fw.ControlPoints().GetBooleanValue("<key>", false, fw.For(user.ID))`; `internal/fireweave/control_points.go`
-   - Java: `Fw.controlPoints().getBooleanValue("<key>", false, ctx)`; `FireweaveControlPoints.java`
-   - Rust: `fireweave::start::control_points().get_boolean_value("<key>", false, Some(&ctx))`; `src/fireweave_control_points.rs`
-   - Dart: `fw.controlPoints.getBooleanValue('<key>', false)`; `lib/fireweave/control_points.dart`
-   - Swift: `fw.controlPoints.getBooleanValue("<key>", default: false)`; `FireweaveLocalControlPoints.swift`
-
-   Config options and overrides: `.fireweave/agent-instructions.md` → FireWeave SDK: configuration and overrides (<language>).
-
-3. **BEFORE done** call `mcp__rollout_server__assert_dev_checklist` with `{ feature }` — PARK on any block (includes dummy metrics with no emit sites). Also `reconcile` phase `build`.
-4. Backfill after coding is forbidden. Do not write repo-local `mcp/`.
-5. **Absence has names.** `never-authored` is the only one that means author a manifest. `not-fetched` → `fw sync`; `not-authorized` → the manifests are withheld, not absent (`fw login` / ask an admin); `server-unavailable` → retry; `queued` → you already authored it, drain `.fireweave/.queue/`. Never author to clear the last four.
-
-## Ship path
-
-`/fw-rollout` promotes existing rollout-ready work only. If `assert_dev_checklist` fails, finish the package first — there is no wrap-from-scratch path.
-```
-
----
-
-## CLAUDE.md rollout-ready block
-
-Upsert this block near the top of `CLAUDE.md` (replace any prior one-line FireWeave pointer). Do not merely link `.fireweave/agent-instructions.md` — inline the order:
-
-```markdown
-## 🔴 FireWeave rollout-ready — HARD ORDER (this repo is initialised)
-
-This repo is FireWeave rollout-ready ("promote, not wrap"). For **every user-facing
-OR control-point-gated OR behavior-changing** change — including internal/ops/observability
-wiring — the rollout-ready package comes **FIRST, while you write code**, never as a
-backfill after the feature is built. Backfill breaks promote-not-wrap and is forbidden.
-
-**Classify the task first, in one line:** `change` (you will modify observable
-behaviour) · `inquiry` (explain / locate / review) · `brainstorm` (nothing written
-yet) · `infra-only` (config, docs, formatting, no behaviour delta). Only `change`
-runs the steps below. A keyword hook surfaced this reminder; it cannot tell
-`fix the checkout bug` from `how do I fix this typo` — you can. **When the class
-is genuinely unclear, treat it as `change`:** skipping wrongly ships unflagged
-behaviour that is invisible until nothing can be promoted or rolled back, while
-running wrongly costs a few tool calls. Re-classify the moment a brainstorm
-starts writing code.
-
-1. **FIRST** — author the rollout-ready manifest by calling
-   `mcp__rollout_server__upsert_rollout_manifest` `{ feature, manifest, baseContentHash }`
-   (Manifest contract in [.fireweave/agent-instructions.md](.fireweave/agent-instructions.md)).
-   **FireWeave stores the manifest — do not write a manifest file yourself.**
-   `baseContentHash` is required and nullable (`null` = "no row yet"); on `conflict`,
-   re-apply on top of `current` and retry with `currentContentHash`. Mint
-   `chg_<ULID>` + `stmp_<ULID>`, and apply the stamp policy — per-surface stamps by default (append each stamp ONLY to its own surface's `FW_STAMPS`, in `.fireweave/stamps.<ext>` on a start-profile surface); one shared stamp only when the change is single-project and every participating surface's harness is surface-aware.
-2. Gate the new behavior behind the harness control point (`fw.controlPoints.getBooleanValue(<key>, false, ctx)`) and add
-   `// @fireweave-controlpoint <key>` at each evaluation site **as you write it**.
-   On a start-profile surface `fw` comes from the SDK's start module, never a harness: add
-   `'<key>'` with local value `true` to that surface's control-points file to try it locally.
-   - ts-server: `await fw.controlPoints.getBooleanValue('<key>', false, { targetingKey: user.id })` (`@fireweaveai/server-sdk/start`); `src/fireweave/control-points.ts`
-   - web: `fw.controlPoints.getBooleanValue('<key>', false)` (`@fireweaveai/web-sdk/start`, no per-call context); `src/fireweave/control-points.ts`
-   - Python: `fw.control_points.get_boolean_value('<key>', False, EvaluationContext(user_id))`; `fireweave_setup/control_points.py`
-   - Go: `fw.ControlPoints().GetBooleanValue("<key>", false, fw.For(user.ID))`; `internal/fireweave/control_points.go`
-   - Java: `Fw.controlPoints().getBooleanValue("<key>", false, ctx)`; `FireweaveControlPoints.java`
-   - Rust: `fireweave::start::control_points().get_boolean_value("<key>", false, Some(&ctx))`; `src/fireweave_control_points.rs`
-   - Dart: `fw.controlPoints.getBooleanValue('<key>', false)`; `lib/fireweave/control_points.dart`
-   - Swift: `fw.controlPoints.getBooleanValue("<key>", default: false)`; `FireweaveLocalControlPoints.swift`
-
-   Config options and overrides: `.fireweave/agent-instructions.md` → FireWeave SDK: configuration and overrides (<language>).
-
-3. **BEFORE calling the task done** — run `mcp__rollout_server__assert_dev_checklist`
-   `{ feature }` (PARK on any block) + `detect_rollout_ready` + `reconcile` phase `build`.
-4. Do **not** open a PR / declare done until `assert_dev_checklist.pass === true`.
-   Ship only via `/fireweave:safe-rollout` (promotes; never wraps).
-5. **Absence has names — only `never-authored` means author one.** `not-fetched` →
-   run `fw sync`. `not-authorized` → the manifests are **withheld, not absent**;
-   `fw login` or ask an org admin. `server-unavailable` → retry. `queued` → you
-   already authored it and it is waiting in `.fireweave/.queue/`; drain it. Never
-   author a manifest to clear any of those four — you would displace a contract you
-   cannot currently see.
-
-If a request looks like feature work and you have NOT done step 1, stop and do it
-first. If you are unsure whether a change qualifies, it does — err toward wrapping.
-```
 
 ---
 
@@ -252,21 +168,37 @@ const j = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 process.stdout.write(j.projectId || j.projects ? 'yes' : 'no');
 " "$proj")" || exit 1
 [[ "$bound" == "yes" ]] || exit 0
-summary="FireWeave rollout-ready repo: follow .fireweave/agent-instructions.md on every feature change (anchor + manifest + stamp before /fw-rollout)."
+summary="FireWeave repo: for a behaviour change follow the rollout contract in AGENTS.md (manifest → new control point → checklist → pull request); merging registers the rollout."
 if [[ -f "$inst" ]]; then
-  summary="$summary See agent-instructions for harness paths and dev checklist."
+  summary="$summary More in .fireweave/agent-instructions.md."
 fi
 printf '%s\n' "{\"additional_context\":$(node -e "console.log(JSON.stringify(process.argv[1]))" "$summary")}"
 ```
 
-Write `.cursor/hooks/fireweave-rollout-stop.sh` (executable):
+Write `.cursor/hooks/fireweave-rollout-stop.sh` (executable). Cursor submits a stop hook's `followup_message` as the next prompt, so it sends one only for drift, and none while `loop_count` says it already sent one; `cache-required` and `gate-outdated` alone get one line on stderr per conversation and no follow-up (0049 Stage D). Keep its `# fireweave-stop-hook: 2` line:
 
 ```bash
 #!/usr/bin/env bash
 # After agent work, nudge when rollout-ready artifacts drift.
+# fireweave-stop-hook: 2
+#
+# Cursor submits a stop hook's `followup_message` as the next prompt, up to
+# five times, so every follow-up is a forced turn (0049 Stage D):
+#   - setup state is not drift: when `cache-required` (a fresh clone has no
+#     .fireweave/.cache/) or `gate-outdated` are the only blocking findings,
+#     there is no follow-up; one line goes to stderr (Cursor's hook output),
+#     once per conversation. The gate still refuses to pass on them;
+#   - drift sends one follow-up, and none while `loop_count` says this hook
+#     already sent one.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 gate="$root/.fireweave/hooks/rollout-build-gate.sh"
+payload=""
+if [[ ! -t 0 ]]; then payload="$(cat 2>/dev/null || true)"; fi
+flat="$(printf '%s' "$payload" | tr '\n\r' '  ')"
+loops="$(printf '%s' "$flat" | grep -oE '"loop_count"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)"
+if [[ -n "$loops" && "$loops" -gt 0 ]]; then exit 0; fi
+conversation="$(printf '%s' "$flat" | grep -oE '"conversation_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^.*:[[:space:]]*"//; s/"$//' || true)"
 # No gate ⇒ nothing to run. A gate that is PRESENT but not executable used to
 # mean the same thing SILENTLY — a repo that believes it is gated and is not.
 # Say so, and run it through bash rather than skipping the check. Likewise never
@@ -284,11 +216,23 @@ trap 'rm -f "$out" "$err"' EXIT
 # "drift detected" line, which reads as an ordinary finding rather than as
 # "this repo is not being gated".
 if bash "$gate" >"$out" 2>"$err"; then exit 0; fi
+rules="$(node -e "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log([...new Set((j.findings||[]).filter(f=>f.severity==='block').map(f=>f.rule))].sort().join(','))" "$out" 2>/dev/null || true)"
 findings="$(node -e "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log((j.findings||[]).filter(f=>f.severity!=='info').map(f=>f.fix?f.message+' Fix: '+f.fix:f.message).join('; '))" "$out" 2>/dev/null || true)"
 if [[ -z "$findings" ]]; then
   findings="the gate produced no verdict: $(tr '\n' ' ' <"$err")"
 fi
-msg="FireWeave rollout-ready drift: ${findings}. Complete anchor + manifest + fw-tracker stamp per .fireweave/agent-instructions.md, then run reconcile phase build."
+case ",$rules," in
+  ,cache-required, | ,gate-outdated, | ,cache-required,gate-outdated,)
+    marks="${TMPDIR:-/tmp}/fireweave-stop-hook.$(id -u 2>/dev/null || echo 0)"
+    key="$(printf '%s|%s|setup:%s' "$root" "$conversation" "$rules" | cksum | awk '{print $1}')"
+    if [[ ! -e "$marks/$key" ]]; then
+      { mkdir -p "$marks" && : >"$marks/$key"; } 2>/dev/null || true
+      echo "FireWeave build gate: not green, and nothing to fix in code (shown once this conversation): ${findings}" >&2
+    fi
+    exit 0
+    ;;
+esac
+msg="FireWeave rollout-ready drift: ${findings}. Follow the rollout contract in AGENTS.md (the manifest on this branch, an anchor at each evaluation site), then run fw tool reconcile with phase build."
 printf '%s\n' "{\"followup_message\":$(node -e "console.log(JSON.stringify(process.argv[1]))" "$msg")}"
 ```
 
@@ -304,6 +248,7 @@ Three artifacts, all **required and committed**:
 
 - Emit Claude Code's injection JSON — `{ "hookSpecificOutput": { "hookEventName": <event>, "additionalContext": <reminder> } }` — a **bare `echo` is not reliably injected**; use the JSON form.
 - Fire on **SessionStart** (empty prompt → surface the standing reminder unconditionally) and **UserPromptSubmit** (narrow to feature-intent keywords: `add|implement|feature|feat|fix|ship|build|wrap|change|refactor|rollout|flag`).
+- Remind in **one line of at most 160 bytes** that points at `AGENTS.md`, where the rollout contract is (Step 4's `fw tool render-entries` writes it). The hook only reminds; the contract instructs, so the reminder never restates it.
 - Be **fail-open** — `set -uo pipefail` (not `-e`), guard every `node`/`cd`, and `exit 0` on any error.
 - Read `.fireweave/project.json` and decide on **project identity** (`projectId` / `projects`) — the same rule as the build-gate wrapper. Never read the `rolloutReady` block: a block that never wrote `initialized` is indistinguishable from `initialized: false`, and both used to no-op this reminder in silence on repos `adopt` exists to serve. No-op only when the pointer carries no identity.
 - **Prompt source (HARD):** Claude Code `UserPromptSubmit` sends a JSON payload on **stdin** (not `$1`). Parse stdin first (`prompt` / `user_prompt` / `userPrompt` / `message`); fall back to `$1` then `CLAUDE_USER_PROMPT`. Do **not** rely on argv alone — that silently skips the keyword filter.
@@ -325,7 +270,7 @@ if [[ ! -t 0 ]]; then
   fi
 fi
 [[ -z "$prompt" ]] && prompt="${1:-${CLAUDE_USER_PROMPT:-}}"
-msg="FireWeave rollout-ready repo (promote-not-wrap). FIRST classify this task in one line — change | inquiry | brainstorm | infra-only — because this reminder fired on a KEYWORD match and the keyword cannot tell 'fix the checkout bug' from 'how do I fix this typo'. Only 'change' runs the package; when genuinely unclear treat it as change (skipping wrongly ships unflagged behaviour, running wrongly costs a few tool calls). For a change task the rollout-ready package comes FIRST — author the manifest via upsert_rollout_manifest (FireWeave stores it; do not write a manifest file yourself) + mint chg_/stmp_ + append each stamp to its own surface's FW_STAMPS (on a start-profile surface: in .fireweave/stamps.ts, .py or .json; one shared stamp only when single-project + every surface's harness is surface-aware), seed new control points in the surface's control-points file on a start-profile surface (config options and overrides per language: .fireweave/agent-instructions.md, FireWeave SDK: configuration and overrides), add // @fireweave-controlpoint <key> as you code, then assert_dev_checklist + reconcile(build) before done. No backfill. Absence has names: only never-authored means author one; not-fetched=fw sync, not-authorized=withheld not absent, queued=drain .fireweave/.queue. Ship via /fireweave:safe-rollout. See .fireweave/agent-instructions.md."
+msg="FireWeave repo: for a behaviour change follow AGENTS.md (manifest → new control point → checklist → PR). Merge registers the rollout; no safe-rollout."
 if [[ -n "$prompt" ]] && ! echo "$prompt" | grep -qiE '\b(add|implement|feature|feat|fix|ship|build|wrap|change|refactor|rollout|flag)\b'; then exit 0; fi
 node -e "console.log(JSON.stringify({hookSpecificOutput:{hookEventName:process.argv[2]||'UserPromptSubmit',additionalContext:process.argv[1]}}))" "$msg" "${HOOK_EVENT:-}" 2>/dev/null || printf '%s\n' "$msg"
 exit 0
@@ -350,14 +295,16 @@ exit 0
 
 **3. The build-gate stop hook** — `.claude/hooks/rollout-build-gate-stop.sh` (executable, `chmod +x`), wired on **Stop**. Without it Claude Code has NO build gate: the intent gate is advisory (it reminds, it never checks), so on a Claude-only host the manifest ⇄ anchor check simply does not happen and nothing says so. Cursor has run this gate on every stop since initialise; this is the parity. It MUST:
 
-- Honour `stop_hook_active` from the stdin payload — blocking twice loops the agent against a gate it may not be able to clear (a `fw sync` finding needs a network the session may not have).
-- Emit `{ "decision": "block", "reason": <findings> }` on failure and **nothing at all** on success.
+- Honour `stop_hook_active` from the stdin payload — blocking twice loops the agent against a gate it may not be able to clear (a `fw sync` finding needs a network the session may not have). Cursor runs this hook too, through its import of Claude Code's hooks, and sends no `stop_hook_active`: honour its `loop_count`, and block at most once per conversation for the same findings when the payload carries no `stop_hook_active`.
+- Emit `{ "decision": "block", "reason": <findings> }` when the gate finds drift and **nothing at all** on success. **Setup state is not drift (0049 Stage D):** when `cache-required` (a fresh clone has no `.fireweave/.cache/`) or `gate-outdated` are the only blocking findings, emit `{ "systemMessage": <findings> }` once per session and do not block. The gate still does not pass — a missing cache is never green — but no code edit clears it, and blocking forced a turn on every reply.
+- Carry the `# fireweave-stop-hook: 2` line: the plugin's session hook names a stop hook without it as an older copy for `/fireweave:adopt` to refresh.
 - Filter `severity: "info"` findings out of the reason — the manifest-source line is diagnostics, not drift.
 - Be fail-open on everything except a gate that ran and failed. The one fail-open that is now **visible** is a gate present but not executable: that used to skip the check silently, which is a repo that believes it is gated and is not.
 
 ```bash
 #!/usr/bin/env bash
 # Claude Code Stop-hook parity for the rollout-ready build gate.
+# fireweave-stop-hook: 2
 #
 # Cursor has run this gate on every stop since initialise. Claude Code ran only
 # the ADVISORY intent gate (a reminder on SessionStart / UserPromptSubmit), so a
@@ -369,17 +316,43 @@ exit 0
 # fail-open that is now VISIBLE is a gate present but not executable — that used
 # to skip the check silently, which is a repo that believes it is gated and is
 # not.
+#
+# Setup state is not drift (0049 Stage D). A fresh clone has no
+# .fireweave/.cache/ (it is gitignored), and a copied gate can be older than the
+# cache `fw` wrote. The gate still refuses to pass on either (`cache-required`,
+# `gate-outdated`: a missing cache is never green), but blocking on them forced
+# a turn on every reply for something no code edit fixes. So when those are the
+# only blocking findings, the person is told ONCE per session (`systemMessage`)
+# and the stop is not blocked. Drift (an orphan anchor, a manifest control
+# point with no anchor, RAMP-1, an unreplayable queue entry) still blocks.
 set -uo pipefail
 root="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)" || exit 0
 gate="$root/.fireweave/hooks/rollout-build-gate.sh"
 
+payload=""
+if [ ! -t 0 ]; then payload="$(cat 2>/dev/null || true)"; fi
+flat="$(printf '%s' "$payload" | tr '\n\r' '  ')"
 # Claude sets `stop_hook_active` once this hook has already blocked. Blocking a
 # second time loops the agent against a gate it may not be able to clear (e.g.
 # `fw sync` needs a network this session does not have).
-payload="$(cat 2>/dev/null || true)"
-case "$payload" in
+case "$flat" in
   *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exit 0 ;;
 esac
+# Cursor runs this hook too (it imports Claude Code's hooks) and sends no
+# `stop_hook_active`. Its `loop_count` says it already sent a follow-up.
+loops="$(printf '%s' "$flat" | grep -oE '"loop_count"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1)"
+if [ -n "$loops" ] && [ "$loops" -gt 0 ]; then exit 0; fi
+session="$(printf '%s' "$flat" | grep -oE '"(session_id|conversation_id)"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^.*:[[:space:]]*"//; s/"$//')"
+
+# True the first time `$1` is seen in this session (per repository); a marker
+# file under $TMPDIR remembers it.
+once() {
+  marks="${TMPDIR:-/tmp}/fireweave-stop-hook.$(id -u 2>/dev/null || echo 0)"
+  key="$(printf '%s|%s|%s' "$root" "$session" "$1" | cksum | awk '{print $1}')"
+  [ -e "$marks/$key" ] && return 1
+  { mkdir -p "$marks" && : >"$marks/$key"; } 2>/dev/null || true
+  return 0
+}
 
 [ -f "$gate" ] || exit 0
 if [ ! -x "$gate" ]; then
@@ -396,6 +369,10 @@ trap 'rm -f "$out" "$err"' EXIT
 # "this repo is not being gated".
 if bash "$gate" >"$out" 2>"$err"; then exit 0; fi
 
+rules="$(node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+console.log([...new Set((j.findings || []).filter((f) => f.severity === 'block').map((f) => f.rule))].sort().join(','));
+" "$out" 2>/dev/null || true)"
 reason="$(node -e "
 const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
 console.log((j.findings || []).filter((f) => f.severity !== 'info').map((f) => (f.fix ? f.message + ' Fix: ' + f.fix : f.message)).join('; '));
@@ -403,7 +380,24 @@ console.log((j.findings || []).filter((f) => f.severity !== 'info').map((f) => (
 if [ -z "$reason" ]; then
   reason="the gate produced no verdict: $(tr '\n' ' ' <"$err")"
 fi
-msg="FireWeave rollout-ready build gate FAILED: ${reason} Complete the rollout-ready package per .fireweave/agent-instructions.md — author the manifest via upsert_rollout_manifest, add // @fireweave-controlpoint at each evaluation site, append the stamp to its surface's FW_STAMPS — then re-run the gate. If a finding says \`fw sync\`, this worktree has no server projection and absence is NOT evidence: fetch it rather than authoring over a contract you cannot see."
+
+case ",$rules," in
+  ,cache-required, | ,gate-outdated, | ,cache-required,gate-outdated,)
+    once "setup:$rules" || exit 0
+    msg="FireWeave build gate: not green, and nothing to fix in code (shown once this session): ${reason}"
+    node -e "console.log(JSON.stringify({ systemMessage: process.argv[1] }))" "$msg" 2>/dev/null \
+      || printf '%s\n' "$msg" >&2
+    exit 0
+    ;;
+esac
+
+# A host that sends no `stop_hook_active` (Cursor) blocks once per conversation
+# for the same findings, never in a loop.
+case "$flat" in
+  *'"stop_hook_active"'*) ;;
+  *) once "drift:$reason" || exit 0 ;;
+esac
+msg="FireWeave rollout-ready build gate FAILED: ${reason} Follow the rollout contract in AGENTS.md — author the manifest on this branch with fw tool upsert-rollout-manifest and put // @fireweave-controlpoint <key> at each evaluation site — then re-run the gate. If a finding says \`fw sync\`, this worktree has no server projection and absence is NOT evidence: fetch it rather than authoring over a contract you cannot see."
 node -e "console.log(JSON.stringify({ decision: 'block', reason: process.argv[1] }))" "$msg" 2>/dev/null \
   || printf '%s\n' "$msg"
 exit 0
@@ -415,15 +409,16 @@ Record `CLAUDE.md`, `.claude/hooks/rollout-intent-gate.sh`, `.claude/hooks/rollo
 
 ## Tool manifest
 
+Every `fw tool` this skill runs; Step 0.0 checks each one is in `fw tool list --json`.
+
 ```json
 {
   "SKILL_EXPECTED_TOOL_MANIFEST": [
-    { "name": "ensure_auth", "server": "rollout-server" },
-    { "name": "select_project", "server": "rollout-server" },
-    { "name": "list_registered_tools", "server": "rollout-server" },
-    { "name": "detect_rollout_ready", "server": "rollout-server" },
-    { "name": "reconcile", "server": "rollout-server" },
-    { "name": "update_repo_state", "server": "rollout-server" }
+    { "name": "ensure-auth", "via": "fw tool" },
+    { "name": "detect-rollout-ready", "via": "fw tool" },
+    { "name": "reconcile", "via": "fw tool" },
+    { "name": "render-entries", "via": "fw tool" },
+    { "name": "update-repo-state", "via": "fw tool" }
   ]
 }
 ```

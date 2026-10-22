@@ -62,7 +62,7 @@ the exit code is Step 1's.
 
 ## Forbidden in this skill
 
-`request_user_input`; editing any file under the checkout; any `mcp__rollout_server__*`
+`request_user_input`; editing any file under the checkout; any MCP
 tool; any network call other than `fw` itself; calling `fw merge register`
 without `--dry-run`.
 

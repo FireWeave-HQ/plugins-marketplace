@@ -1,16 +1,25 @@
 {
-  "description": "Fireweave auth gate — runs `fw status` before any Fireweave skill invocation and triggers an inline OAuth device flow if needed. Scoped to Fireweave skills only via PreToolUse + per-entry `if` clauses; other prompts and plugins are untouched.",
+  "description": "Fireweave hooks. One shell-command gate (0656 W6; 1230 §5, layer 3): a plain `fw tool …` command runs without a prompt and any other way of running `fw tool` is refused with the plain form; `gh pr merge … --admin` and `gh api … rulesets` are refused in a cloud agent, CI or with a machine credential and asked about on a developer's machine. Every other command is left to Claude Code's own permissions. One session-start check (0656 W12): in a FireWeave repository, one line naming older FireWeave instruction text or hooks and the command that refreshes them; it never blocks.",
   "hooks": {
-    "PreToolUse": [
+    "SessionStart": [
       {
-        "matcher": "Skill",
         "hooks": [
           {
             "type": "command",
-            "if": "Skill(skill='safe-rollout')",
-            "description": "fireweave auth preflight (safe-rollout)",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-auth-gate.sh\"",
-            "timeout": 360
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-session-check.sh\" claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fw-shell-gate.sh\" claude",
+            "timeout": 10
           }
         ]
       }

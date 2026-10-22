@@ -1,10 +1,17 @@
 {
   "version": 1,
   "hooks": {
-    "beforeMCPExecution": [
+    "beforeShellExecution": [
       {
-        "command": "${workspaceFolder}/hooks/fw-auth-gate-core.sh",
-        "timeout": 30
+        "command": "bash \"${workspaceFolder}/hooks/fw-shell-gate.sh\" cursor",
+        "timeout": 30,
+        "matcher": "(^|[;&|({`]|\\$\\()\\s*([A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*([^\\s;&|(){}`]*/)?fw(\\.exe)?\\s+tool(\\s|$)|(^|[^A-Za-z0-9_./-])gh(\\s.*)?\\spr\\s+merge(\\s.*)?\\s--admin([\\s=]|$)|(^|[^A-Za-z0-9_./-])gh(\\s.*)?\\sapi\\s.*[Rr]uleset"
+      }
+    ],
+    "sessionStart": [
+      {
+        "command": "bash \"${workspaceFolder}/hooks/fw-session-check.sh\" cursor",
+        "timeout": 10
       }
     ]
   }
