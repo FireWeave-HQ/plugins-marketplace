@@ -25,7 +25,7 @@
  * | `.cache/` this gate's `schemaVersion` cannot read | none | **block as `gate-outdated`, NOT `cache-required`** — the cache is newer than this copy of the gate, so fetching again cannot help. See {@link FIX}. |
  * | **Stale** cache (branch ≠ HEAD)         | `.cache/rollout-ready/` | **scan, with a warning** naming both branches and `fetchedAt`. A stale answer beats no answer — never a silent one. |
  * | **Fresh** cache                         | `.cache/rollout-ready/` | **scan normally**, fully offline. |
- * | Cache + non-empty `.queue/`             | cache **∪** queue | **scan the union**, with every queued contribution TAGGED. The queue is the author's newest intent; excluding it would fail an author's own gate on their own offline work. |
+ * | Cache + non-empty outbox                | cache **∪** queue | **scan the union**, with every queued contribution TAGGED. The queue is the author's newest intent; excluding it would fail an author's own gate on their own offline work. |
  *
  * ## There is one manifest source (ADR-019 Phase 6)
  *
@@ -61,11 +61,22 @@
  * as the mirrors they are. `node:crypto` is the one addition to the import set:
  * a checksum is what separates a projection from a hand-edited file, and there
  * is no way to compute one without a hash primitive.
+ *
+ * ## The project's sync mode (feature coordination P3)
+ *
+ * The mode `fw sync` last recorded (`<git common dir>/fireweave/sync-settings.json`,
+ * else the cache's `meta.json`; the strictest of the bound projects; never seen
+ * means `outbox`) decides what this gate reads. `outbox`: the cache ∪ the
+ * outbox, as above. `cache`: the cache alone — nothing is queued in that mode.
+ * `live`: nothing local is trusted, and this copy cannot connect, so it passes
+ * with a `not-verified` warning; `fw gate` (used whenever `fw` is installed)
+ * reads fw-server instead. `fw gate` also revalidates the cache against the
+ * server in the other two modes; this copy never does.
  */
 import { readdir, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, dirname, extname, isAbsolute } from 'node:path';
+import { join, dirname, extname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -77,7 +88,52 @@ const projPath = join(root, '.fireweave', 'project.json');
 // the last thing suggesting otherwise, and the skill's own spec table had copied
 // that suggestion into an instruction.
 const cacheDir = join(root, '.fireweave', '.cache');
-const queueDir = join(root, '.fireweave', '.queue');
+const queueDir = join(
+  gitCommonDir(root) ?? join(root, '.git'),
+  'fireweave',
+  'outbox'
+);
+/** `SYNC_SETTINGS_RELATIVE_PATH` under the git common dir, like the outbox. */
+const syncSettingsPath = join(
+  gitCommonDir(root) ?? join(root, '.git'),
+  'fireweave',
+  'sync-settings.json'
+);
+
+/**
+ * The git common dir, read from disk: the manifest outbox lives under it, one
+ * per clone, shared by its worktrees. MIRRORS `resolveGitCommonDir` in
+ * rollout-tools (`tools/_git-common-dir.ts`); `rollout-build-gate.test.ts`
+ * holds the two to the same answers. Walks up from `start` to the nearest
+ * `.git`, as git does; `null` when none can be followed.
+ */
+function gitCommonDir(start) {
+  let worktreeRoot = resolve(start);
+  let dotGit = join(worktreeRoot, '.git');
+  while (!existsSync(dotGit)) {
+    const up = dirname(worktreeRoot);
+    if (up === worktreeRoot) return null;
+    worktreeRoot = up;
+    dotGit = join(worktreeRoot, '.git');
+  }
+  let gitDir = dotGit;
+  try {
+    if (!statSync(dotGit).isDirectory()) {
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
+      if (!m) return null;
+      gitDir = resolve(worktreeRoot, m[1]);
+    }
+  } catch {
+    return null;
+  }
+  try {
+    const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim();
+    if (common) return resolve(gitDir, common);
+  } catch {
+    /* no commondir: the gitdir is the common dir */
+  }
+  return gitDir;
+}
 
 // ── Mirrors of the contracts, not second sources of truth ────────────────────
 /**
@@ -111,6 +167,19 @@ const QUEUE_ENTRY_FILENAME_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}\.json$/;
  * branch-scoped tombstone whose dead code cleanup already removed.
  */
 const RETIRED_MANIFEST_STATUS = new Set(['archived', 'retiring']);
+/**
+ * Cloud API host → web app origin, for the link a `manifest-conflicted`
+ * warning carries. MIRRORS fw-cli's `login.ts` constants; any other server
+ * gets the origin-free path, because a self-hosted server's web app may be on
+ * any origin.
+ */
+const CLOUD_WEBAPP_BY_SERVER = new Map([
+  ['https://app-server.fireweave.ai', 'https://app.fireweave.ai'],
+  [
+    'https://staging-app-server.fireweave.ai',
+    'https://staging-app.fireweave.ai',
+  ],
+]);
 /**
  * Remediation is per-STATE, not per-rule.
  *
@@ -642,6 +711,27 @@ function repoStateFromCache(files) {
   }
 }
 
+/**
+ * The `conflicted` drafts (P4) `fw sync` keeps in `meta.json`, as rows.
+ * MIRRORS fw-cli's `conflictedRows` in `src/gate/rollout-gate.ts`.
+ */
+function conflictedRows(meta) {
+  const byProject = meta?.conflicted;
+  if (!byProject || typeof byProject !== 'object') return [];
+  return Object.entries(byProject).flatMap(([projectId, list]) =>
+    (Array.isArray(list) ? list : []).map((c) => ({
+      feature: String(c?.feature),
+      projectId,
+      shadowed: false,
+      status: 'conflicted',
+      flags: (Array.isArray(c?.controlPointKeys) ? c.controlPointKeys : []).map(
+        (key) => ({ key })
+      ),
+      manifest: null,
+    }))
+  );
+}
+
 /** One row per `.cache/rollout-ready/<feature>.json`. */
 function cachedManifestRows(files, findings) {
   const rows = [];
@@ -662,6 +752,7 @@ function cachedManifestRows(files, findings) {
     }
     rows.push({
       feature: rel.slice(prefix.length, -'.json'.length),
+      projectId: raw?.row?.projectId,
       shadowed: raw?._shadowed === true,
       status: raw?.row?.status,
       flags: manifestControlPoints(raw?.row?.manifest),
@@ -671,7 +762,7 @@ function cachedManifestRows(files, findings) {
   return rows;
 }
 
-// ── Leg C: the author's own unsynced queue (`.fireweave/.queue/`) ────────────
+// ── Leg C: the author's own unsynced outbox (`.git/fireweave/outbox/`) ───────
 
 /**
  * Entries in REPLAY order (ascending ULID = ascending authoring time), plus
@@ -838,7 +929,69 @@ async function collectAnchorFlags(scan, vocabulary) {
   return byKey;
 }
 
+/**
+ * The strictest recorded sync mode; never seen means `outbox`. MIRRORS
+ * `readSyncMode` in rollout-tools (`tools/_sync-settings.ts`) and the order of
+ * contracts' `SyncModeSchema`.
+ */
+async function syncMode() {
+  const order = ['outbox', 'cache', 'live'];
+  const read = async (path) => {
+    try {
+      return JSON.parse(await readFile(path, 'utf8'));
+    } catch {
+      return null;
+    }
+  };
+  const settingsOf = (doc) =>
+    doc?.projectSettings && typeof doc.projectSettings === 'object'
+      ? doc.projectSettings
+      : null;
+  // A record no `fw sync` wrote yet (no projectIds) is merged over the cache's.
+  const record = await read(syncSettingsPath);
+  const settings = Array.isArray(record?.projectIds)
+    ? (settingsOf(record) ?? {})
+    : {
+        ...settingsOf(await read(join(cacheDir, CACHE_META_FILENAME))),
+        ...settingsOf(record),
+      };
+  let mode = 'outbox';
+  for (const s of Object.values(settings)) {
+    if (order.indexOf(s?.syncMode) > order.indexOf(mode)) mode = s.syncMode;
+  }
+  return mode;
+}
+
 // ── Verdict ──────────────────────────────────────────────────────────────────
+
+/**
+ * A `conflicted` draft (feature coordination P4): a merge met it with a stale
+ * base whose control-point changes overlap the shipped contract's, so it did
+ * not ship. Its control points count as known until a person resolves it in
+ * the web app; the gate warns and never blocks on it. The link MIRRORS
+ * `webappPaths.projectRepositories` (else `webappPaths.feature`) in
+ * `@fireweaveai/contracts/webapp`.
+ */
+function conflictWarning(projectRaw, feature, row, keys) {
+  const path =
+    typeof projectRaw?.orgId === 'string' && typeof row.projectId === 'string'
+      ? `/org/${encodeURIComponent(projectRaw.orgId)}/projects/${encodeURIComponent(row.projectId)}/settings/repositories`
+      : `/features/${encodeURIComponent(feature)}` +
+        (typeof row.projectId === 'string'
+          ? `?project=${encodeURIComponent(row.projectId)}`
+          : '');
+  const server = projectRaw?.server?.url;
+  const origin =
+    typeof server === 'string'
+      ? CLOUD_WEBAPP_BY_SERVER.get(server.replace(/\/+$/, ''))
+      : undefined;
+  return {
+    rule: 'manifest-conflicted',
+    severity: 'warn',
+    message: `feature '${feature}' did not ship: its manifest was merged on a stale base and changes the same control point(s) as the shipped contract, so it waits for a person — its control points (${keys.join(', ') || 'none'}) count as known here until then`,
+    fix: `resolve it in the web app ("Take this version" or "Keep shipped"): ${origin ? `${origin}${path}` : path}`,
+  };
+}
 
 function emit(findings) {
   const pass = !findings.some((f) => f.severity === 'block');
@@ -866,6 +1019,17 @@ async function main() {
     return emit(findings);
   }
 
+  const mode = await syncMode();
+  if (mode === 'live') {
+    findings.push({
+      rule: 'not-verified',
+      severity: 'warn',
+      message: `could not verify against fw-server (this gate does not connect to fw-server). This project's sync mode is live, so this gate reads no local cache and does not block.`,
+      fix: 'connect and run the gate again: `fw gate` reads fw-server (run `fw login` if the profile is signed out)',
+    });
+    return emit(findings);
+  }
+
   /** Scan scope. Set from the projection once the cache validates — see ROW 3. */
   let scan;
   /** flag key → `{ origin: 'cache' | 'queue', feature, entryId?, queuedAt? }`. */
@@ -874,11 +1038,16 @@ async function main() {
   const declaredSurfaces = new Set();
   /** Pushed only once the vocabulary is known, so the info line can name it. */
   let manifestSource = null;
+  /** Control-point keys of `conflicted` drafts (P4): known, never demanded. */
+  const conflictedKeys = new Set();
+  const conflictWarnings = [];
 
   {
     const cacheFiles = await readCacheFiles();
     const cache = validateCache(cacheFiles);
-    const queue = await readQueue();
+    // Only `outbox` mode queues edits, so only it overlays them.
+    const queue =
+      mode === 'outbox' ? await readQueue() : { entries: [], unreplayable: [] };
 
     // Reported in EVERY pointer row, including the block below: an entry that
     // cannot be read is an authored manifest nobody can check.
@@ -887,7 +1056,7 @@ async function main() {
         rule: 'queue-unreplayable',
         severity: 'block',
         unsynced: true,
-        message: `.fireweave/.queue/${u.file} is an unsynced manifest edit this gate cannot read (${u.reason}) — a queued edit that cannot be read is a contract that cannot be checked, and skipping it silently is how an author's own work disappears`,
+        message: `.git/fireweave/outbox/${u.file} is an unsynced manifest edit this gate cannot read (${u.reason}) — a queued edit that cannot be read is a contract that cannot be checked, and skipping it silently is how an author's own work disappears`,
         fix: FIX.queueUnreplayable,
       });
     }
@@ -940,11 +1109,24 @@ async function main() {
     }
 
     scan = scanConfigFrom(repoStateFromCache(cacheFiles));
-    const rows = cachedManifestRows(cacheFiles, findings);
+    const rows = [
+      ...cachedManifestRows(cacheFiles, findings),
+      ...conflictedRows(cache.meta),
+    ];
     let usedRows = 0;
     for (const row of rows) {
       // A shipped row the branch's own draft shadows is not this branch's answer.
       if (row.shadowed) continue;
+      if (row.status === 'conflicted') {
+        const keys = row.flags
+          .map((f) => f?.key)
+          .filter((k) => typeof k === 'string');
+        for (const k of keys) conflictedKeys.add(k);
+        conflictWarnings.push(
+          conflictWarning(proj.raw, row.feature, row, keys)
+        );
+        continue;
+      }
       if (RETIRED_MANIFEST_STATUS.has(row.status)) continue;
       // The author's unsynced edit is newer than the projection it displaces.
       if (latestQueuedByFeature.has(row.feature)) continue;
@@ -984,7 +1166,7 @@ async function main() {
       message:
         `manifest source: .fireweave/.cache/rollout-ready (${usedRows} row(s), branch '${cache.meta.branch}', fetched ${cache.meta.fetchedAt ?? 'unknown'})` +
         (queuedFeatures.length > 0
-          ? ` ∪ .fireweave/.queue (${latestQueuedByFeature.size} UNSYNCED edit(s): ${queuedFeatures.join(', ')}) — teammates cannot see queued entries until the queue drains`
+          ? ` ∪ the outbox (${latestQueuedByFeature.size} UNSYNCED edit(s): ${queuedFeatures.join(', ')}) — teammates cannot see queued entries until the queue drains`
           : ''),
     };
   }
@@ -1018,16 +1200,18 @@ async function main() {
     });
   }
 
+  findings.push(...conflictWarnings);
+
   const anchorMap = await collectAnchorFlags(scan, vocabulary);
   const anchorFlags = new Set(anchorMap.keys());
 
   for (const coded of anchorFlags) {
-    if (!manifestFlags.has(coded)) {
+    if (!manifestFlags.has(coded) && !conflictedKeys.has(coded)) {
       findings.push({
         rule: 'orphan-anchor',
         severity: 'block',
         message: `coded control point '${coded}' has no manifest entry (orphan control point) — ${anchorMap.get(coded)}`,
-        fix: `if you authored this manifest it is not in this worktree's view — ${SYNC_FIX}, or drain .fireweave/.queue/`,
+        fix: `if you authored this manifest it is not in this worktree's view — ${SYNC_FIX}, which also sends the outbox`,
       });
     }
   }

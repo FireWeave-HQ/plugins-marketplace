@@ -1082,20 +1082,31 @@ for local mode sets `FIREWEAVE_ENV`.
 **Client surfaces (web, a Swift app) need a NEW browser key.** The scaffold's web
 key was server-family (`project-api-key_…`), which the start profile refuses, so
 this is a new key, not a rename. Run
-`fw tool issue-browser-key --input-file .fireweave/tmp/issue-browser-key.json --write-to .fireweave/tmp/browser-key`
-with the input `{ projectId, surfaceId, label: "fireweave-init:<surfaceId>" }`:
+`fw tool issue-browser-key --input-file .fireweave/tmp/issue-browser-key.json --write-to .fireweave/tmp/browser-key-<slug>`
+once per environment whose build destination takes the key (first record one
+build destination per environment, slug → destination), with the input
+`{ projectId, surfaceId, environment: "<slug>" }` (slugs from
+`fw tool list-project-environments`). The key is scoped to that environment and
+labelled `fireweave-init:<surfaceId>@<slug>`; a staging build never gets a key
+that serves production. Omit `environment` only when that list answers its
+`synthesised` placeholder (the project has no environments yet).
 
-- `issued` — the key is written to `.fireweave/tmp/browser-key` (git-ignored)
+- `issued` — the key is written to `.fireweave/tmp/browser-key-<slug>` (git-ignored)
   and never printed. It goes to exactly one place: the build destination the
-  user picked (CI, the hosting build environment, an untracked xcconfig),
-  through that destination's own secret command or pasted by the user. Then
-  delete the file. Never into a developer `.env` (it would make `vite dev`
+  user picked for THAT environment (CI, the hosting build environment, an
+  untracked xcconfig), through that destination's own secret command or pasted
+  by the user. Then delete the file before the next environment's key is issued. Never into a developer `.env` (it would make `vite dev`
   remote), a tracked file, a log line or the summary.
-- `exists` — an active browser key for this surface already exists and its
+- `exists` — an active browser key for this surface and environment already exists and its
   secret cannot be read back. Ask whether the destinations already hold it;
   re-issue with `rotate: true` only if the user says so.
 - `fallback-portal` — send the user to the portal's Browser keys panel with the
   reason the tool gave.
+
+When a result carries `unscopedPredecessors` (project-wide keys an earlier run
+issued under `fireweave-init:<surfaceId>`; they serve every environment), tell
+the user to revoke those ids in Browser keys once every environment's
+destination holds its scoped key.
 
 Then remove `PUBLIC_FW_PROJECT_API_KEY` / `VITE_FW_PROJECT_API_KEY` (web) or the
 Info.plist `FWProjectApiKey` (Swift) from every build destination. **Ask the user
@@ -1287,6 +1298,7 @@ Every `fw tool` this skill runs; Step 0 checks each one is in `fw tool list --js
   "SKILL_EXPECTED_TOOL_MANIFEST": [
     { "name": "ensure-auth", "via": "fw tool" },
     { "name": "detect-rollout-ready", "via": "fw tool" },
+    { "name": "list-project-environments", "via": "fw tool" },
     { "name": "record-rollout-env-contract", "via": "fw tool" },
     { "name": "update-repo-state", "via": "fw tool" },
     { "name": "resolve-sdk-channel", "via": "fw tool" },

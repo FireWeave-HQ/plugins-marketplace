@@ -18,9 +18,6 @@
 # Customer-side prerequisite: `curl`, `unzip`, and `sha256sum` (or
 # `shasum -a 256` on macOS) on PATH. All three ship with stock macOS
 # and every mainstream Linux distro.
-#
-# See .aidocs/publish-plugins-versioning-spec.md §4.7 (Component G)
-# and .aidocs/publish-plugins-component-g-followups-plan.md.
 
 set -e
 

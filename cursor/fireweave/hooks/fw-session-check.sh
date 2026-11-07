@@ -11,18 +11,23 @@
 # 1. Stale instruction text, in the coding-agent instruction files `fw doctor`
 #    reads (`isInstructionFile` in `@fireweaveai/rollout-engine`), with the same
 #    rules as its `findStaleInstructions` (a parity test keeps them equal):
-#      - a FireWeave entry block in `format=1` (the interim text). This plugin
-#        ships once the merge path registers per environment, so `format=2` is
-#        the norm and `fw tool render-entries` rewrites the block in place;
+#      - a FireWeave entry block from before the gate (any role but
+#        `agents-contract` below `format=3`): it loads the contract whether or
+#        not FireWeave is on, and `fw tool render-entries` writes the gate;
+#      - a FireWeave contract (`agents-contract`) in `format=1` (the interim
+#        text). This plugin ships once the merge path registers per
+#        environment, so `format=2` is the norm and `fw tool render-entries`
+#        rewrites the block in place;
 #      - the HARD ORDER block an older `/fireweave:adopt` appended;
 #      - a retired rollout-server MCP tool: `mcp__rollout-server__…` anywhere, a
 #        bare name inside a current FireWeave block or a FireWeave skill copy;
 #      - an instruction to run the removed safe-rollout.
 #    Fix: `fw tool render-entries`, or `/fireweave:adopt`.
 # 2. Older FireWeave hooks: the repository's `.fireweave/hooks/rollout-build-gate.
-#    {mjs,sh}` differ from the copies beside this script, or a FireWeave stop
-#    hook lacks the `# fireweave-stop-hook: 2` line (0049 Stage D: a fresh clone
-#    no longer forces a turn). Fix: `/fireweave:adopt`, which refreshes them.
+#    {mjs,sh}` or `agent-gate.sh` differ from the copies beside this script, a
+#    FireWeave stop hook lacks the `# fireweave-stop-hook: 3` line (it honours
+#    the agent gate), or the retired intent gate / Cursor session hook is still
+#    there. Fix: `/fireweave:adopt`, which refreshes them.
 #
 # Hosts (the argument):
 #   claude  Claude Code SessionStart: `systemMessage` (the person sees it) and
@@ -89,7 +94,7 @@ root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
 # ── 1. Stale instruction text ────────────────────────────────────────────────
 
 # rollout-engine's INSTRUCTION_FILES, as one ERE.
-INSTRUCTION_RE='(^|/)AGENTS(\.override)?\.md$|(^|/)CLAUDE(\.local)?\.md$|^\.claude/rules/.+\.md$|^\.cursor/rules/.+\.mdc?$|^\.cursorrules$|^\.cursor/skills/[^/]+/SKILL\.md$|^\.github/copilot-instructions\.md$|^\.github/instructions/.+\.instructions\.md$|(^|/)GEMINI\.md$|^\.junie/guidelines\.md$|^\.windsurfrules$|^\.clinerules(/.+\.md)?$|^\.fireweave/agents-core\.md$|^\.fireweave/agent-instructions\.md$|^\.fireweave/instructions/.+\.md$'
+INSTRUCTION_RE='(^|/)AGENTS(\.override)?\.md$|(^|/)CLAUDE(\.local)?\.md$|^\.claude/rules/.+\.md$|^\.cursor/rules/.+\.mdc?$|^\.cursorrules$|^\.cursor/skills/[^/]+/SKILL\.md$|^\.github/copilot-instructions\.md$|^\.github/instructions/.+\.instructions\.md$|(^|/)GEMINI\.md$|^\.junie/guidelines\.md$|^\.windsurfrules$|^\.clinerules(/.+\.md)?$|^\.fireweave/agents-core\.md$|^\.fireweave/agents-gate\.md$|^\.fireweave/agent-instructions\.md$|^\.fireweave/instructions/.+\.md$'
 
 listed="$(git -C "$root" ls-files --cached --others --exclude-standard 2>/dev/null || true)"
 if [ -z "$listed" ]; then
@@ -102,7 +107,9 @@ CLAUDE.md
 GEMINI.md
 .junie/AGENTS.md
 .junie/guidelines.md
+.fireweave/agents-gate.md
 .fireweave/agents-core.md
+.fireweave/instructions/contract.md
 .fireweave/agent-instructions.md"
 fi
 
@@ -187,7 +194,10 @@ FNR == 1 {
     sha = t; sub(/^.* sha256=/, "", sha); sub(/ -->$/, "", sha)
     if (length(sha) == 64) {
       fmt = t; sub(/^.* format=/, "", fmt); sub(/ .*$/, "", fmt)
-      if (fmt + 0 < 2) { report("format-1-block"); covered = 1 }
+      role = t; sub(/^<!-- fireweave:begin role=/, "", role); sub(/ .*$/, "", role)
+      # The contract is current at 2; every other block at 3, the gate.
+      if (role == "agents-contract" && fmt + 0 < 2) { report("format-1-block"); covered = 1 }
+      else if (role != "agents-contract" && fmt + 0 < 3) { report("ungated-block"); covered = 1 }
       else inblock = 1
       next
     }
@@ -218,7 +228,7 @@ add_hook() {
   if [ -z "$hooks" ]; then hooks="$1"; else hooks="$hooks, $1"; fi
 }
 gate_old=""
-for g in rollout-build-gate.mjs rollout-build-gate.sh; do
+for g in rollout-build-gate.mjs rollout-build-gate.sh agent-gate.sh; do
   if [ -f "$root/.fireweave/hooks/$g" ] && [ -f "$HERE/$g" ] &&
     ! cmp -s "$root/.fireweave/hooks/$g" "$HERE/$g"; then
     gate_old=1
@@ -226,12 +236,16 @@ for g in rollout-build-gate.mjs rollout-build-gate.sh; do
 done
 [ -n "$gate_old" ] && add_hook "the build gate (.fireweave/hooks/)"
 if [ -f "$root/.claude/hooks/rollout-build-gate-stop.sh" ] &&
-  ! grep -q '^# fireweave-stop-hook: 2$' "$root/.claude/hooks/rollout-build-gate-stop.sh"; then
+  ! grep -q '^# fireweave-stop-hook: 3$' "$root/.claude/hooks/rollout-build-gate-stop.sh"; then
   add_hook "the Claude Code stop hook"
 fi
 if [ -f "$root/.cursor/hooks/fireweave-rollout-stop.sh" ] &&
-  ! grep -q '^# fireweave-stop-hook: 2$' "$root/.cursor/hooks/fireweave-rollout-stop.sh"; then
+  ! grep -q '^# fireweave-stop-hook: 3$' "$root/.cursor/hooks/fireweave-rollout-stop.sh"; then
   add_hook "the Cursor stop hook"
+fi
+if [ -f "$root/.claude/hooks/rollout-intent-gate.sh" ] ||
+  [ -f "$root/.cursor/hooks/fireweave-rollout-session.sh" ]; then
+  add_hook "the retired session hooks (the agent gate replaces them)"
 fi
 
 [ -n "$found" ] || [ -n "$hooks" ] || quiet
@@ -250,10 +264,11 @@ if [ -n "$found" ]; then
     *) where="$first, $second and $((n - 2)) more files hold" ;;
   esac
   kinds=""
-  for k in format-1-block legacy-block mcp-tool-name safe-rollout; do
+  for k in ungated-block format-1-block legacy-block mcp-tool-name safe-rollout; do
     printf '%s\n' "$found" | cut -f1 | grep -qx "$k" || continue
     case "$k" in
-      format-1-block) w="format=1 FireWeave blocks" ;;
+      ungated-block) w="FireWeave blocks from before its gate" ;;
+      format-1-block) w="a format=1 FireWeave contract" ;;
       legacy-block) w="an older HARD ORDER block" ;;
       mcp-tool-name) w="retired MCP tool names" ;;
       safe-rollout) w="safe-rollout instructions" ;;

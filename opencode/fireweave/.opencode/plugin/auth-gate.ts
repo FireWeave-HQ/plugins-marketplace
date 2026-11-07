@@ -8,7 +8,7 @@ export const fwShellGate = async ({ $ }) => ({
   "tool.execute.before": async (input, output) => {
     if (input?.tool !== "bash") return;
     const command = output?.args?.command;
-    if (typeof command !== "string" || !/fw(\.exe)?\s+tool|gh\s/.test(command)) return;
+    if (typeof command !== "string" || !/fw(\.exe)?\s+(tool|agents)|gh\s/.test(command)) return;
     const gate = join(import.meta.dir, "..", "hooks", "fw-shell-gate.sh");
     const input_ = new Response(JSON.stringify({ command }));
     const r = await $`bash ${gate} exit < ${input_}`.quiet().nothrow();

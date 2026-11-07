@@ -29,6 +29,19 @@ if [[ "$bound" != "yes" ]]; then
   echo "rollout-build-gate: $proj carries no project identity (projectId / projects) — refusing to report a pass on a repo this gate cannot scope. Bind the repo with \`fw init\`, then run /fireweave:initialise." >&2
   exit 1
 fi
+# FireWeave off on this machine, or waiting on the person (signed out: sign in
+# or skip), per the agent gate beside this script: nothing gates here, by
+# design, and the readiness check on the pull request still runs. Said on
+# stderr, never silent. CI and FireWeave-hosted reviewers are always on.
+if [[ -f "$root/.fireweave/hooks/agent-gate.sh" ]]; then
+  state="$(bash "$root/.fireweave/hooks/agent-gate.sh" state </dev/null 2>/dev/null || true)"
+  case "$state" in
+    off | ask | silent)
+      echo "rollout-build-gate: FireWeave is $state for this repo on this machine (.fireweave/hooks/agent-gate.sh state), so the gate does not run." >&2
+      exit 0
+      ;;
+  esac
+fi
 # The gate itself decides what an absent manifest means (D-C); the wrapper must
 # not pre-empt that verdict.
 #
@@ -37,11 +50,16 @@ fi
 # installed and this root holds `.git` (the root `fw gate` resolves, so both
 # gates read the same tree). Otherwise the copied gate beside this script
 # answers, exactly as before: an `fw` older than the command gives no verdict,
-# and a machine without `fw` is told so once.
+# and a machine without `fw` is told so once. Which `fw`: the agent gate's
+# one rule (`cliPath` from .fireweave/local.json, else `fw` on PATH), then the
+# default install location.
 fw=""
-if command -v fw >/dev/null 2>&1; then
+if [[ -f "$root/.fireweave/hooks/agent-gate.sh" ]]; then
+  fw="$(bash "$root/.fireweave/hooks/agent-gate.sh" cli </dev/null 2>/dev/null || true)"
+elif command -v fw >/dev/null 2>&1; then
   fw="fw"
-elif [[ -x "${HOME:-}/.fireweave/bin/fw" ]]; then
+fi
+if [[ -z "$fw" && -x "${HOME:-}/.fireweave/bin/fw" ]]; then
   fw="${HOME:-}/.fireweave/bin/fw"
 fi
 if [[ -n "$fw" && -e "$root/.git" ]]; then
