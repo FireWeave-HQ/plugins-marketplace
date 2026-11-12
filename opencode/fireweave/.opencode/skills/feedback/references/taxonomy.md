@@ -1,3 +1,5 @@
+> Interaction: gate each decision with the native `question` tool (multi-option; supports multi-select + custom free-text).
+
 # Feedback categories
 
 The skill proposes one of these from the session and the user's remarks, then

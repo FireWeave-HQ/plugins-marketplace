@@ -1,3 +1,5 @@
+> Interaction: gate each decision with `request_user_input` (single-choice; "(Recommended)" first). If interactive prompting is unavailable (non-interactive run), present numbered options inline and wait.
+
 # Feedback categories
 
 The skill proposes one of these from the session and the user's remarks, then

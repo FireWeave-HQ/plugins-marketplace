@@ -1,3 +1,5 @@
+> Interaction: there is no skill-callable prompt tool — gate each decision by STOP and ask the user to pick a labelled option (or move the gate into the bundled MCP server via Elicitation).
+
 # Feedback categories
 
 The skill proposes one of these from the session and the user's remarks, then

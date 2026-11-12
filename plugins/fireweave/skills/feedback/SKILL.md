@@ -32,7 +32,7 @@ Run `fw tool ensure-auth`.
 
 **Only a missing `fw` stops this skill**, because `fw` is what collects (Step 4).
 When `fw` is not found (see **Which `fw`**), tell the user to install the `fw`
-CLI (`docs/install.md`) and run `fw plugins install`, which lets this agent run
+CLI (`docs/install.md`) and run `fw plugins install fireweave`, which lets this agent run
 `fw`, then run this skill again. Write nothing first.
 
 Unlike every other FireWeave skill, this one **does NOT PARK** on a bad result.

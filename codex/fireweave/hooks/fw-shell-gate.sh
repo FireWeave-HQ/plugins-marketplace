@@ -159,8 +159,9 @@ ADMIN_RE='(^|[^A-Za-z0-9_./-])gh([[:space:]].*)?[[:space:]]pr[[:space:]]+merge([
 RULESET_RE='(^|[^A-Za-z0-9_./-])gh([[:space:]].*)?[[:space:]]api[[:space:]].*[Rr]uleset'
 
 # The tools that change something (every effect but `read` in
-# rollout-tools' fw-tool/registry.ts); a test keeps this list equal to it.
-WRITE_OPS="apply-setup-artifacts issue-browser-key record-rollout-env-contract refresh-agent-skills render-entries report-harness-migration sdk-install select-project stop-feature-claim update-repo-state upsert-rollout-manifest"
+# rollout-tools' fw-tool/registry.ts, except install-agent-hooks, which only
+# wires the agent gate itself); a test keeps this list equal to it.
+WRITE_OPS="apply-setup-artifacts issue-browser-key prepare-local-setup record-rollout-env-contract refresh-agent-skills render-entries report-harness-migration sdk-install select-project setup-post setup-pre stop-feature-claim update-repo-state upsert-rollout-manifest"
 
 plain_fw_tool() {
   case "$CMD" in

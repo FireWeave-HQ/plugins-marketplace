@@ -28,6 +28,11 @@
 #    FireWeave stop hook lacks the `# fireweave-stop-hook: 3` line (it honours
 #    the agent gate), or the retired intent gate / Cursor session hook is still
 #    there. Fix: `/fireweave:adopt`, which refreshes them.
+# 3. Hooks unwired or orphaned, for this host (Claude Code, Cursor, Codex): the agent
+#    gate or this host's stop script is in the repository but its hooks file
+#    names neither (unwired), or the hooks file names one that is missing
+#    (orphaned). Lexical, as rollout-tools' `hookWiring` (agent-hooks.ts); a
+#    parity test keeps them equal. Fix: `/fireweave:adopt`.
 #
 # Hosts (the argument):
 #   claude  Claude Code SessionStart: `systemMessage` (the person sees it) and
@@ -248,7 +253,32 @@ if [ -f "$root/.claude/hooks/rollout-intent-gate.sh" ] ||
   add_hook "the retired session hooks (the agent gate replaces them)"
 fi
 
-[ -n "$found" ] || [ -n "$hooks" ] || quiet
+# ── 3. Unwired or orphaned hooks ─────────────────────────────────────────────
+
+hfile=""
+own=""
+case "$host" in
+  claude) hfile=".claude/settings.json" own=".claude/hooks/rollout-build-gate-stop.sh" ;;
+  cursor) hfile=".cursor/hooks.json" own=".cursor/hooks/fireweave-rollout-stop.sh" ;;
+  codex) hfile=".codex/hooks.json" own="" ;;
+esac
+unwired=""
+orphaned=""
+if [ -n "$hfile" ]; then
+  htext=""
+  [ -f "$root/$hfile" ] && htext="$(cat "$root/$hfile" 2>/dev/null || true)"
+  for p in .fireweave/hooks/agent-gate.sh $own; do
+    named=""
+    case "$htext" in *"$p"*) named=1 ;; esac
+    if [ -n "$named" ] && [ ! -f "$root/$p" ]; then
+      if [ -z "$orphaned" ]; then orphaned="$p"; else orphaned="$orphaned, $p"; fi
+    elif [ -z "$named" ] && [ -f "$root/$p" ]; then
+      if [ -z "$unwired" ]; then unwired="$p"; else unwired="$unwired, $p"; fi
+    fi
+  done
+fi
+
+[ -n "$found" ] || [ -n "$hooks" ] || [ -n "$unwired" ] || [ -n "$orphaned" ] || quiet
 
 # ── The one line ─────────────────────────────────────────────────────────────
 
@@ -279,6 +309,15 @@ if [ -n "$found" ]; then
 fi
 if [ -n "$hooks" ]; then
   line="$line This repository's $hooks differ from this plugin's: update the FireWeave plugin, then /fireweave:adopt refreshes them."
+fi
+
+if [ -n "$unwired" ] || [ -n "$orphaned" ]; then
+  parts=""
+  [ -n "$unwired" ] && parts="unwired: $unwired"
+  if [ -n "$orphaned" ]; then
+    if [ -n "$parts" ]; then parts="$parts; orphaned: $orphaned"; else parts="orphaned: $orphaned"; fi
+  fi
+  line="$line This agent's FireWeave hooks in $hfile are incomplete ($parts): /fireweave:adopt wires them."
 fi
 
 line="$(printf '%s' "$line" | tr -d '\000-\037')"

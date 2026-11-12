@@ -34,14 +34,29 @@ This skill runs FireWeave's tools through the `fw` CLI in your shell, as `fw too
 
 ## Step 0 — `fw` reaches FireWeave (fail closed)
 
-Run `fw tool list --json`, then `fw tool ensure-auth`, from this shell, not from what an earlier session saw. **PARK, writing nothing,** and say which case it is:
+<!-- fw-step0 -->
+<!-- The same text in initialise, adopt, add-surface, cleanup and migrate-harness. Edit it in initialise, then run `bun run gen:setup-templates` in packages/rollout-tools. -->
 
-| What happened                                                                             | Tell the user                                                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fw` is not found (see **Which `fw`**)                                                    | install the `fw` CLI (`docs/install.md`), then run `fw plugins install`: it installs FireWeave's skills and the allow rule that lets this agent run `fw`. Then run this skill again                                   |
-| `fw tool list --json` lacks a tool this skill's **Tool manifest** names                   | this `fw` is older than the skill: `fw self-update`, then `fw plugins install`                                                                                                                                        |
-| `fw tool ensure-auth` exits `5`, or its `result.create_permission.cause` is `unreachable` | this shell cannot reach FireWeave: it is sandboxed or offline. `fw plugins install` writes this agent's allow rule for `fw`, which lets `fw` reach FireWeave from a sandboxed shell; or run where the network is open |
-| `fw tool ensure-auth` exits `3`                                                           | `fw login`, then run this skill again                                                                                                                                                                                 |
+Run these from this shell, in this order, not from what an earlier session saw. Stop at the first one that fails: **PARK, writing nothing,** and say which case it is.
+
+1. **Which `fw`: `$FW`.** Read `.fireweave/local.json`. When it has a `cliPath` that is an absolute path to an executable file (`test -x <cliPath>`), `$FW` is that path; otherwise `$FW` is `fw`, found as **Which `fw`** says. Every `fw …` command this skill names runs as `$FW …`. `$FW` is a placeholder, never a shell variable: type the path itself.
+2. **The tools are there.** `$FW tool list --json` lists every tool this skill's **Tool manifest** names.
+3. **Signed in.** `$FW tool ensure-auth` exits `0`.
+4. **FireWeave is on for coding agents here.** `$FW tool agent-context`. From here on `$FW` is its `result.cli`. On `result.state`:
+   - `on` → continue. When `result.enforced` is `true`, say so: this project requires FireWeave for coding agents, so `fw agents off` cannot switch it off here.
+   - `off` → **stop, writing nothing,** and tell the user: _"FireWeave is switched off for coding agents in this repository on this machine. Run `fw agents on` in a terminal, then run this skill again."_ Never switch it on yourself.
+   - `sign-in` or `ask` → `fw login` in a terminal, then run this skill again.
+   - `silent` → this repository is not bound to a FireWeave project (`result.reason` `not-fireweave-repo`), or `.fireweave/project.json` is not valid JSON (`invalid-project-json`): run `fw init` in this repository first, then this skill again.
+5. **Bound.** `result.repo_binding.bound` from step 3 is `true`; otherwise run `fw init` in this repository first, then this skill again. Never bind it yourself.
+
+| What happened                                                                              | Tell the user                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fw` is not found (see **Which `fw`**)                                                     | install the `fw` CLI (`docs/install.md`), then run `fw plugins install fireweave`: it installs FireWeave's skills and the allow rule that lets this agent run `fw`. Then run this skill again                                   |
+| `$FW tool list --json` lacks a tool this skill's **Tool manifest** names                   | this `fw` is older than the skill: `fw self-update`, then `fw plugins install fireweave`                                                                                                                                        |
+| `$FW tool ensure-auth` exits `5`, or its `result.create_permission.cause` is `unreachable` | this shell cannot reach FireWeave: it is sandboxed or offline. `fw plugins install fireweave` writes this agent's allow rule for `fw`, which lets `fw` reach FireWeave from a sandboxed shell; or run where the network is open |
+| `$FW tool ensure-auth` exits `3`                                                           | `fw login`, then run this skill again                                                                                                                                                                                           |
+
+<!-- /fw-step0 -->
 
 ## HARD ORDER
 
@@ -985,8 +1000,7 @@ old file.
 ### 4e. Record the metrics client
 
 Write `metricsClient` onto each surface in `.fireweave/project.json`
-`surfaces[]`, and send the same value with
-`fw tool update-repo-state`, its input `{ "fields": … }` holding:
+`surfaces[]`:
 
 ```jsonc
 {
@@ -1000,6 +1014,9 @@ Write `metricsClient` onto each surface in `.fireweave/project.json`
   ],
 }
 ```
+
+It goes in `project.json` only. Do not send it to `update-repo-state`:
+that tool owns only the repo-scoped fields and refuses `surfaces`.
 
 Use the name 4a resolved. **Absent is not `"none"`** — leaving the field off says
 nobody looked, and the next change re-derives the answer badly from whichever
@@ -1040,7 +1057,8 @@ fw repo declare-surfaces --project {projectId} --json --surfaces '[{"surface":"t
 `entrypoint` = the entrypoint, `harnessKind: 'package'`, `startProfile`
 (`server` | `client`) when the surface is not plain server, `trackerPath` = the
 §3h stamps file, `rolloutCredentialEnv` as above. Keep `surfaceId` and
-`metricsClient`. `sdk` is written by `resolve-sdk-install`; do not hand-write it.
+`metricsClient`. `sdk` is the `sdk` value `resolve-sdk-install` returned
+(`{ name, version?, channel }`): record it as returned; do not hand-write it.
 
 **Then the manifests.** Every feature manifest whose `harness.surface` is a
 moved surface is re-authored — resolve it through the seam and write it with
@@ -1297,10 +1315,10 @@ Every `fw tool` this skill runs; Step 0 checks each one is in `fw tool list --js
 {
   "SKILL_EXPECTED_TOOL_MANIFEST": [
     { "name": "ensure-auth", "via": "fw tool" },
+    { "name": "agent-context", "via": "fw tool" },
     { "name": "detect-rollout-ready", "via": "fw tool" },
     { "name": "list-project-environments", "via": "fw tool" },
     { "name": "record-rollout-env-contract", "via": "fw tool" },
-    { "name": "update-repo-state", "via": "fw tool" },
     { "name": "resolve-sdk-channel", "via": "fw tool" },
     { "name": "resolve-sdk-install", "via": "fw tool" },
     { "name": "sdk-install", "via": "fw tool" },

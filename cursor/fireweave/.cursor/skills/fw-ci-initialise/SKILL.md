@@ -25,10 +25,11 @@ your notes. Be quick: you are not re-checking the plan, you are applying it.
 - `/work/.fw/setup/pre.json` — what FireWeave already did, per app
   (`surfaces[]`): `outcome` (`ready` = yours to finish, `agent` = install the
   SDK first, then finish it (below), `blocked` = leave it alone), `kind`
-  (`ts-server` | `web`), `entrypoint` (null when FireWeave could not find it),
-  `startPath`, `startImport` (the start module as `entrypoint` imports it),
-  `controlPointsPath`, `buildConfig`, `identitySeam`, `metrics`, and the
-  owner's `guidance` (below).
+  (`ts-server`, `web`, `python`, `rust`, `swift`, `go`, `java`, `dart`), `entrypoint` (null when
+  FireWeave could not find it), `startPath` (null: the start call goes in the
+  entrypoint), `startImport` (the start module as `entrypoint` imports it),
+  `controlPointsPath`, `buildConfig`, `identitySeam`, `metrics`, `baseline`
+  (the errors the app had before you), and the owner's `guidance` (below).
 - `/work/.fw/setup/plan.json` — the setup plan the user confirmed. You rarely
   need it; `pre.json` already carries what each app needs.
 - `/work/.fw/setup/notes.json` — your output, and your checkpoint: if it
@@ -106,9 +107,27 @@ of the failing output, and a `todo` a person can act on.
 
 ## Per app (every `ready` or `agent` entry in pre.json)
 
+<!-- fw-per-app -->
+<!-- The same text in ci-initialise and initialise. Edit it in ci-initialise, then run `bun run gen:setup-templates` in packages/rollout-tools. -->
+
 **1. Find the entrypoint** when `entrypoint` is null: the module the app's
-process (server) or page (web) loads first. Read its `package.json` scripts and
-`index.html`; do not explore further than that. Record it in your notes.
+process (server) or page (web) loads first. Read its manifest (`package.json`
+scripts, `index.html`, `pyproject.toml`, `Cargo.toml`, `Package.swift`,
+`go.mod`, `pom.xml`, `build.gradle*`, `pubspec.yaml`); do not
+explore further than that. Record it in your notes.
+
+**Repo conventions.** Every edit should look like the repo wrote it:
+
+- The lockfile is written only by the repo's own tool. Never edit one by hand.
+- A dependency goes in the manifest of the module that owns the entrypoint, in
+  the declaration style that manifest already uses.
+- Imports follow the entrypoint's existing style.
+- Format the files you edited, and only those, with the formatter the repo
+  already configures. No formatter configured: format nothing. Never run an
+  import sorter over a start call.
+
+`kind` decides the steps. `startPath` null means the start call goes in the
+entrypoint itself. Do not edit `<startPath>` or `<controlPointsPath>`.
 
 **2. `ts-server`.** The entrypoint's FIRST import is the start module:
 
@@ -116,30 +135,95 @@ process (server) or page (web) loads first. Read its `package.json` scripts and
 import '<startImport>'; // FireWeave: must stay the first import
 ```
 
-Nothing else changes. Do not edit `<startPath>` or `<controlPointsPath>`.
+Nothing else changes. When pre installed the CommonJS twin under the ES module
+name (`"@fireweaveai/server-sdk": "npm:@fireweaveai/server-sdk-cjs@…"`),
+imports stay `@fireweaveai/server-sdk/start`. When it added
+`@fireweaveai/server-sdk-cjs` as a devDependency (Jest runs as CommonJS), add
+to the Jest config
+`moduleNameMapper: { '^@fireweaveai/server-sdk(/.*)?$': '@fireweaveai/server-sdk-cjs$1' }`,
+and for a jsdom environment a setup file with
+`globalThis.TextEncoder ??= require('node:util').TextEncoder;`.
 
 **3. `web`.** The entry module's FIRST import is the start module, and the
-first render waits for it:
+first render waits for it with `then` (never a top-level `await ready`):
 
 ```ts
 import { ready } from '<startImport>';
 // …existing imports…
-await ready; // or: ready.then(() => createRoot(el).render(<App />));
+ready.then(() => createRoot(el).render(<App />));
 ```
 
-- Vite, SvelteKit, React Router 7, Nuxt, Astro: add `fireweave()` from
-  `@fireweaveai/web-sdk/vite` to `buildConfig`'s plugins (Nuxt and Astro under
-  `vite: { plugins: [...] }`).
-- Next.js, webpack, esbuild, Rollup, Angular: `fireweaveDefine()` from
-  `@fireweaveai/web-sdk/define` through the bundler's define plugin.
-- SvelteKit: the start import goes in `src/hooks.client.ts`. Next.js:
+- Build config (`buildConfig`). Vite, SvelteKit, React Router 7, Nuxt, Astro:
+  `fireweave()` from `@fireweaveai/web-sdk/vite` in its plugins (Nuxt and
+  Astro under `vite: { plugins: [...] }`). Next.js:
+  `compiler: { define: fireweaveDefine() }` in `next.config`
+  (`@fireweaveai/web-sdk/define`); never a `webpack()` DefinePlugin hook,
+  which fails Next 16's default Turbopack build. webpack, esbuild, Rollup:
+  `fireweaveDefine()` through the bundler's define plugin. Angular, Parcel,
+  Create React App: no build plugin; pass `key` and `environment` to `start()`
+  at runtime, from the app's own config.
+- Named entries. SvelteKit: `src/hooks.client.ts`. Next.js:
   `instrumentation-client.ts` (Next ≥ 15.3) or a `'use client'` provider in the
-  fireweave directory, wrapping `{children}` in `app/layout.tsx`. Angular:
-  `start(...).then(() => bootstrapApplication(...))`.
+  fireweave directory, wrapping `{children}` in `app/layout.tsx`. React Router
+  7: `app/entry.client.tsx`; when absent, write the default one
+  `react-router reveal` would, with the start import first. Nuxt:
+  `plugins/fireweave.client.ts` that imports `ready` and returns it. Astro: a
+  `<script>` importing the start module in the base layout. Angular:
+  `ready.then(() => bootstrapApplication(...))`.
 - A Content-Security-Policy that would block the SDK's request: add the
   FireWeave origin if the policy is in this repository, otherwise a to-do.
 
-**4. Identity.** When `identitySeam.kind` is `path`, open that file and bind
+**4. `python`.** The start call is the FIRST statements of every process
+entrypoint (`main.py`, `wsgi.py`, `asgi.py`, the `create_app()` module, the
+Celery app module), before the app's own imports; only a docstring and
+`from __future__` imports stay above it:
+
+```python
+from fireweave.start import start
+from fireweave_setup.control_points import control_points
+start(control_points=control_points)
+```
+
+`fireweave_setup/` sits in the entrypoint's import root (`src/` in a src
+layout). Never create a package or module named `fireweave`: it shadows the
+SDK.
+
+**5. `rust`.** In each server binary's `main.rs`: `mod fireweave_control_points;`
+beside its other `mod` lines, `use fireweave::start::StartOptions;`, and first
+in `main`:
+
+```rust
+fireweave::start::start(StartOptions { control_points: fireweave_control_points::control_points(), ..Default::default() }).expect("FireWeave start");
+```
+
+End it in `?` instead only when `main` returns a `Result` whose error type
+accepts `FireweaveError` (`Box<dyn Error>`, `anyhow::Error`). Under
+`#[tokio::main]` it still goes first: the call is synchronous. Never a local
+module named `fireweave`.
+
+**6. `swift`.** `FireweaveLocalControlPoints.swift` sits beside the entry. Add
+`import FireweaveStart` to the file that starts. App:
+`startFireweave(controlPoints: appControlPoints)` in the SwiftUI `App`'s
+`init()` (add one if absent) or the first line of `didFinishLaunching`.
+Server (Vapor): `try startFireweave(FireweaveStartOptions(controlPoints: appControlPoints))`
+first in `configure`. Never edit `project.pbxproj`: an Xcode app's SDK install
+is a to-do pre already wrote.
+
+**7. `go`.** In each `main`, after config loading and flag parsing:
+`fw.Start(fw.Options{ControlPoints: appfw.ControlPoints})` (`appfw` = the
+control-points package), its error handled as `main` handles others. Not in
+`init()`.
+
+**8. `java`.** `Fw.start(StartOptions.builder().controlPoints(FireweaveControlPoints.CONTROL_POINTS).build());`
+first in `main` (`ai.fireweave.sdk.start.{Fw, StartOptions}`); Spring Boot:
+before `SpringApplication.run`.
+
+**9. `dart`.** `await Fireweave.start(controlPoints: controlPoints);` in `main`
+before `runApp` or serving (`main` turns `async`), importing the control-points
+file and its `package:fireweave/…` entry. A Flutter app stays `unverified` (no
+Flutter SDK here; pre edited `pubspec.yaml`): add a to-do to run `flutter pub get`.
+
+**10. Identity.** When `identitySeam.kind` is `path`, open that file and bind
 identity where the user is known, unconditionally — never inside a
 control-point branch (INIT-S8):
 
@@ -147,10 +231,21 @@ control-point branch (INIT-S8):
   sign-in (`import { fw } from '@fireweaveai/server-sdk/start'`).
 - `web`: `await fw.identify(user.id, props)` at sign-in AND session restore,
   `await fw.reset()` at sign-out (`@fireweaveai/web-sdk/start`).
+- `python`: `fw.identify(user_id, props)` at sign-in
+  (`from fireweave.start import fw`; async code: `asyncio.to_thread`); skip an
+  anonymous user, whose id is `None`.
+- `rust`: `let _ = fireweave::start::identify(&user.id, [...]);` at sign-in
+  (async code: `spawn_blocking`).
+- `swift`: `await fw.identify(user.id, properties: [...])` at sign-in; an app
+  also at session restore, with `await fw.reset()` at sign-out.
+- `go`: `go func() { _ = fw.Identify(ctx, user.ID, props) }()` at sign-in.
+- `java`: `Fw.identify(userId, Map.of(...))` at sign-in.
+- `dart`: `await fw.identify(user.id, properties: {...})` at sign-in; a client
+  also at session restore, with `await fw.reset()` at sign-out.
 
 Otherwise leave identity alone: post adds the to-do. Record what you bound.
 
-**5. Metrics.** `metrics` in pre.json is what the analysis found and checked:
+**11. Metrics.** `metrics` in pre.json is what the analysis found and checked:
 `plan.surfaces[].metricsClient` and the real calls from
 `plan.surfaces[].metricsExamples`. Confirm each cited line still says what it
 quotes; drop one that does not. Add what a feature agent will need and the
@@ -166,22 +261,36 @@ unit; Logs and Traces are bound separately), because metrics can be connected
 after this PR merges; post
 does, for every app, so you never need to.
 
-**6. Optional overrides.** Add `environment:` to the start call only when the
+**12. Optional overrides.** Add `environment:` to the start call only when the
 app demonstrably names its environment in another variable. Otherwise leave the
 start file as FireWeave wrote it.
+
+**13. Validate.** After the edits, run:
+
+```sh
+fw setup validate --cwd <repository> --pre /work/.fw/setup/pre.json --path <app path> --json
+```
+
+Exit 1 means your edits added errors: `newErrors` lists them. Fix them once,
+then run it again. Record the last run's `validation` in the app's notes
+entry. Errors still there: mark the app `not-set-up` with `reason`
+`validation-failed` and the errors in `error`.
 
 **If an app cannot be finished** (no entrypoint you can identify, a framework
 you cannot wire safely), undo YOUR edits to that app and mark it `not-set-up`
 with a one-line `reason` and a `todo` a person can act on. Then continue.
 
-**After each app**, rewrite `/work/.fw/setup/notes.json` with every app done so
-far, so a retry resumes after it.
+**After each app**, rewrite your notes file, `notes.json`, with every app done
+so far, so a retry resumes after it.
+
+<!-- /fw-per-app -->
 
 ## Output contract
 
 `/work/.fw/setup/notes.json` is your whole answer (FireWeave builds
 `result.json` from it). One entry per `ready` or `agent` app (a `not-set-up`
-one may add `error`: the last lines of the output that stopped it); `todos`
+one may add `error`: the last lines of the output that stopped it; any may add
+`validation`, the last `fw setup validate` verdict); `todos`
 for anything else a person must do (kinds: `env-var`, `deploy-secret`,
 `required-check`, `browser-key`, `merge-onward`, `other`; FireWeave adds the
 standard ones):

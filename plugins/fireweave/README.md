@@ -6,8 +6,9 @@ Skills for working with FireweaveAI directly from your AI coding tool.
 
 - **initialise** — One-time per-repo setup: wires the FireWeave SDK into each app and writes the agent standing instructions. Invoke via `/fireweave:initialise`.
 - **adopt** — Attach this machine's coding agent to a repo that is already initialised. Invoke via `/fireweave:adopt`.
+- **add-surface** — Set up one more app in a repo that is already set up; the apps already set up stay as they are. Invoke via `/fireweave:add-surface`.
 - **migrate-harness** — Move an app's flag reads onto the FireWeave SDK. Invoke via `/fireweave:migrate-harness`.
-- **cleanup** — Retire measured-dead control points; the tombstone lands when the cleanup merges. Invoke via `/fireweave:cleanup`.
+- **cleanup** — Remove the control points fw-server lists as stable from this branch and retire their manifests; the tombstone lands when the cleanup merges. Invoke via `/fireweave:cleanup`.
 - **feedback** — Report that FireWeave behaved wrong in this session. Invoke via `/fireweave:feedback`.
 - **ci-initialise**, **ci-rollout-readiness**, **ci-register-control-points** — run by FireWeave's cloud setup and checks, never by hand.
 

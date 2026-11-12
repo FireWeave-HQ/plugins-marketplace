@@ -3,11 +3,17 @@
 # FireWeave's instructions apply in this repository on this machine now.
 # fireweave-agent-gate: 1
 #
-# /fireweave:initialise and /fireweave:adopt copy it from the FireWeave plugin
-# bundle (hooks/agent-gate.sh) to .fireweave/hooks/agent-gate.sh.
+# FireWeave's hook installer (install-agent-hooks, run by initialise, adopt
+# and setup) writes it to .fireweave/hooks/agent-gate.sh from the copy the fw
+# CLI embeds; this file (hooks/agent-gate.sh) is that copy's source.
 #
 #   agent-gate.sh claude SessionStart|UserPromptSubmit|PreToolUse|Stop
-#   agent-gate.sh cursor sessionStart|afterFileEdit|stop
+#   agent-gate.sh cursor sessionStart|preToolUse|afterFileEdit|stop
+#   agent-gate.sh codex SessionStart|UserPromptSubmit|PreToolUse|Stop
+#   agent-gate.sh gemini SessionStart|BeforeAgent|BeforeTool|AfterAgent
+#   agent-gate.sh copilot sessionStart|preToolUse|agentStop
+#   agent-gate.sh kiro SessionStart|UserPromptSubmit|PreToolUse|Stop
+#   agent-gate.sh cline TaskStart|UserPromptSubmit|PreToolUse
 #   agent-gate.sh declare infra-only   run by the agent (Claude Code): this
 #                                      task changes no product behaviour
 #   agent-gate.sh state                prints on|off|ask|sign-in|silent (the
@@ -20,16 +26,18 @@
 # project's identity and its "agentInstructions": "enforced" flag.
 #
 # A hook injects the whole message once per conversation and afterwards only a
-# change of state, remembered per conversation (Claude Code's session_id,
-# Cursor's conversation_id) under ${TMPDIR:-/tmp}/fireweave-agent-gate.<uid>/.
+# change of state, remembered per conversation (Claude Code's, Codex's, Gemini
+# CLI's and Kiro's session_id, Cursor's conversation_id, Copilot's sessionId,
+# Cline's taskId) under ${TMPDIR:-/tmp}/fireweave-agent-gate.<uid>/.
 # Cursor also runs Claude Code's hooks; the shared marker keeps it from
 # hearing the same thing twice.
 #
 # Fail open: any failure of its own prints nothing and exits 0. The only
 # refusals are deliberate: when the project requires FireWeave and nobody is
-# signed in, file edits are denied (Claude Code's PreToolUse) and finishing
-# with edits made is blocked (Claude Code's Stop) or sent back with a sign-in
-# follow-up (Cursor's stop), unless the agent declared the task infra-only.
+# signed in, file edits are denied (each host's pre-tool hook on its edit
+# tools) and finishing with edits made is blocked or sent back with a sign-in
+# follow-up (each host's stop hook; Cline has none), unless the agent declared
+# the task infra-only.
 #
 # Bash 3.2 and BWK awk; no jq, no node.
 set -u
@@ -89,12 +97,16 @@ fi
 # conversation it belongs to.
 payload=""
 case "$host" in
-  claude | cursor)
+  claude | cursor | codex | gemini | copilot | kiro | cline)
     if [ ! -t 0 ]; then payload="$(cat 2>/dev/null | tr '\n\r' '  ')"; fi
     ;;
 esac
 sid="$(field conversation_id "$payload")"
 [ -n "$sid" ] || sid="$(field session_id "$payload")"
+[ -n "$sid" ] || sid="$(field sessionId "$payload")"
+# shortcut: Cline's taskId (and errorMessage below) are unverified against
+# Cline's docs, which could not be fetched; check a real Cline.
+[ -n "$sid" ] || sid="$(field taskId "$payload")"
 [ "$host" = declare ] && sid="${FIREWEAVE_GATE_SESSION:-}"
 
 # Per-conversation markers: $m.s.<state> (what was last injected), $m.infra
@@ -220,6 +232,37 @@ claim() {
 
 infra_declared() { [ -n "$m" ] && [ -d "$m.infra" ]; }
 
+# Edits refused: the project requires FireWeave and nobody is signed in.
+refuse_edit() {
+  [ -n "$enforced" ] && ! infra_declared && decide && [ "$state" = sign-in ]
+}
+
+# An edit that went through is recorded, for the stop hook.
+edited() {
+  if [ -n "$m" ]; then : >"$m.edited" 2>/dev/null; fi
+}
+
+# A stop hook that already sent the agent back (stop_hook_active) lets it finish.
+# Claude Code included since B8: before it, a signed-out Claude session could
+# be sent back on every Stop.
+stop_again() {
+  case "$payload" in
+    *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) return 0 ;;
+  esac
+  return 1
+}
+
+# Finishing refused: edits were made and the project requires FireWeave.
+refuse_stop() {
+  [ -n "$enforced" ] && [ -n "$m" ] && [ -e "$m.edited" ] && ! infra_declared &&
+    ! stop_again && decide && [ "$state" = sign-in ]
+}
+
+# JSON-escaped text as plain text (Kiro reads stdout and stderr as text).
+plain() {
+  printf '%b' "$(printf '%s' "$1" | sed 's/\\"/"/g')"
+}
+
 case "$host:$event" in
   state:*)
     decide && printf '%s\n' "$state"
@@ -234,7 +277,10 @@ case "$host:$event" in
     echo "FireWeave: recorded this task as infra-only for this conversation."
     ;;
 
-  claude:SessionStart | claude:UserPromptSubmit | cursor:sessionStart)
+  claude:SessionStart | claude:UserPromptSubmit | cursor:sessionStart | \
+    codex:SessionStart | codex:UserPromptSubmit | gemini:SessionStart | \
+    gemini:BeforeAgent | copilot:sessionStart | kiro:SessionStart | \
+    kiro:UserPromptSubmit | cline:TaskStart | cline:UserPromptSubmit)
     if [ "$host:$event" = claude:SessionStart ] && [ -n "${CLAUDE_ENV_FILE:-}" ] &&
       printf '%s' "$sid" | grep -qE '^[A-Za-z0-9._-]+$'; then
       printf 'export FIREWEAVE_GATE_SESSION=%s\n' "$sid" >>"$CLAUDE_ENV_FILE" 2>/dev/null
@@ -243,7 +289,10 @@ case "$host:$event" in
     [ "$state" = silent ] && exit 0
     tell=""
     claim "$state.$reason" && tell=1
-    if [ "$event" != UserPromptSubmit ]; then
+    # Every prompt: tell only a change. A session start: see below.
+    per_prompt=""
+    case "$event" in UserPromptSubmit | BeforeAgent) per_prompt=1 ;; esac
+    if [ -z "$per_prompt" ]; then
       # A session start with no conversation id cannot be remembered, and a
       # compacted one has lost what it was told: tell it again.
       [ -z "$m" ] && tell=1
@@ -251,35 +300,98 @@ case "$host:$event" in
     fi
     [ -n "$tell" ] || exit 0
     text="$(message)"
-    if [ "$host" = cursor ]; then
-      printf '{"additional_context":"%s"}\n' "$text"
-    else
-      printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$event" "$text"
-    fi
+    case "$host" in
+      cursor) printf '{"additional_context":"%s"}\n' "$text" ;;
+      copilot) printf '{"additionalContext":"%s"}\n' "$text" ;;
+      cline) printf '{"cancel":false,"contextModification":"%s"}\n' "$text" ;;
+      # Kiro adds a command's stdout to the agent's context.
+      kiro) plain "$text" && echo ;;
+      *) printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$event" "$text" ;;
+    esac
     ;;
 
-  claude:PreToolUse)
-    if [ -n "$enforced" ] && ! infra_declared && decide && [ "$state" = sign-in ]; then
+  claude:PreToolUse | codex:PreToolUse)
+    # Matched to the edit tools in the hooks file; the same shape on both.
+    if refuse_edit; then
       printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$(signin_refusal)"
       exit 0
     fi
-    if [ -n "$m" ]; then : >"$m.edited" 2>/dev/null; fi
+    edited
+    ;;
+
+  cursor:preToolUse)
+    # Matched to Write (file edits) in .cursor/hooks.json; Cursor's own shape.
+    if refuse_edit; then
+      text="$(signin_refusal)"
+      printf '{"permission":"deny","user_message":"%s","agent_message":"%s"}\n' "$text" "$text"
+    fi
+    ;;
+
+  gemini:BeforeTool)
+    # Matched to write_file|replace in .gemini/settings.json.
+    if refuse_edit; then
+      printf '{"decision":"deny","reason":"%s"}\n' "$(signin_refusal)"
+      exit 0
+    fi
+    edited
+    ;;
+
+  copilot:preToolUse)
+    # Matched to edit|create; the tool name is checked too, in case a CLI
+    # ignores the matcher.
+    case "$(field toolName "$payload")" in edit | create) ;; *) exit 0 ;; esac
+    if refuse_edit; then
+      printf '{"permissionDecision":"deny","permissionDecisionReason":"%s"}\n' "$(signin_refusal)"
+      exit 0
+    fi
+    edited
+    ;;
+
+  kiro:PreToolUse)
+    # shortcut: Kiro's docs disagree on how a hook refuses (any non-zero exit
+    # vs exit 2, reason on stderr); exit 2 satisfies both readings, unverified
+    # against a real Kiro. Upgrade once Kiro documents one rule.
+    if refuse_edit; then
+      plain "$(signin_refusal)" >&2
+      echo >&2
+      exit 2
+    fi
+    edited
+    ;;
+
+  cline:PreToolUse)
+    # Cline hooks have no matcher: only its file-writing tools are judged.
+    # shortcut: matched on the tool names anywhere in the payload, because
+    # Cline does not document the field; upgrade when it does.
+    case "$payload" in
+      *write_to_file* | *replace_in_file*) ;;
+      *) exit 0 ;;
+    esac
+    if refuse_edit; then
+      printf '{"cancel":true,"errorMessage":"%s"}\n' "$(signin_refusal)"
+      exit 0
+    fi
+    edited
     ;;
 
   cursor:afterFileEdit)
-    # Cursor has no pre-edit hook: an edit is only recorded, for its stop.
-    if [ -n "$m" ]; then : >"$m.edited" 2>/dev/null; fi
+    edited
     ;;
 
-  claude:Stop | cursor:stop)
-    if [ -n "$enforced" ] && [ -n "$m" ] && [ -e "$m.edited" ] && ! infra_declared &&
-      decide && [ "$state" = sign-in ]; then
-      if [ "$host" = cursor ]; then
-        printf '{"followup_message":"%s"}\n' "$(signin_refusal)"
-      else
-        printf '{"decision":"block","reason":"%s"}\n' "$(signin_refusal)"
-      fi
-    fi
+  claude:Stop | cursor:stop | codex:Stop | gemini:AfterAgent | copilot:agentStop | kiro:Stop)
+    refuse_stop || exit 0
+    case "$host" in
+      cursor) printf '{"followup_message":"%s"}\n' "$(signin_refusal)" ;;
+      gemini) printf '{"decision":"deny","reason":"%s"}\n' "$(signin_refusal)" ;;
+      kiro)
+        # shortcut: as kiro:PreToolUse, exit 2 with the reason on stderr is
+        # unverified against a real Kiro.
+        plain "$(signin_refusal)" >&2
+        echo >&2
+        exit 2
+        ;;
+      *) printf '{"decision":"block","reason":"%s"}\n' "$(signin_refusal)" ;;
+    esac
     ;;
 esac
 exit 0

@@ -3,6 +3,8 @@
 > Report that FireWeave behaved wrong in this session. Captures the agent session, enriches it with local FireWeave state (CLI status, cache lockfile, manifest versions, tool drift), redacts it locally, takes the user's own remarks, proposes a category, and uploads the bundle to FireWeave after explicit confirmation. Use when the user says "this feels off", "FireWeave is broken", "something's wrong with the rollout skill", "give feedback", "report a problem", "troubleshoot FireWeave", or invokes `/fireweave:feedback`.
 >
 > _User-triggered (Cline does not auto-activate workflows). Run with `/fw-feedback.md`._
+>
+> _The files this workflow names as beside its SKILL.md are in the `fw-feedback/` directory next to this file._
 
 > Interaction: gate each decision with `ask_followup_question` (one question per call; supply an `<options>` array). For multi-question groups, ask sequentially.
 
@@ -28,7 +30,7 @@ Run `fw tool ensure-auth`.
 
 **Only a missing `fw` stops this skill**, because `fw` is what collects (Step 4).
 When `fw` is not found (see **Which `fw`**), tell the user to install the `fw`
-CLI (`docs/install.md`) and run `fw plugins install`, which lets this agent run
+CLI (`docs/install.md`) and run `fw plugins install fireweave`, which lets this agent run
 `fw`, then run this skill again. Write nothing first.
 
 Unlike every other FireWeave skill, this one **does NOT PARK** on a bad result.
